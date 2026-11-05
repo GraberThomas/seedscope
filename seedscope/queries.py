@@ -132,6 +132,7 @@ def summary(conn: sqlite3.Connection, now: int, live: dict[str, Any]) -> dict[st
         "connection_status": live.get("connection_status", ""),
         "collector_error": live.get("last_error", ""),
         "collector_last_success": live.get("last_success", 0),
+        "last_full_success": live.get("last_full_success", 0),
     }
 
 
@@ -585,7 +586,6 @@ def torrent_detail(
     ).fetchall()
     volume = _torrent_volume(conn, torrent_hash, range_key, now)
     detail = dict(row)
-    del detail["content_key"]
     age = max(1, now - row["added_on"]) if row["added_on"] > 0 else None
     return {
         "torrent": detail,
@@ -609,13 +609,37 @@ CONTENT_SORTS = {
     "name": "name COLLATE NOCASE",
     "size": "size",
     "uploaded": "uploaded",
+    "downloaded": "downloaded",
+    "ratio": "ratio",
     "efficiency": "efficiency",
     "up_period": "up_period",
     "last_activity": "last_activity",
+    "added_on": "added_on",
+    "seeding_time": "seeding_time",
     "torrents": "torrents",
     "popularity": "popularity",
+    "seeders": "seeders",
     "leechers": "leechers",
 }
+
+
+def _content_sparklines(conn: sqlite3.Connection, keys: list[str], now: int) -> dict[str, list[int]]:
+    """Bytes sent per day over the last 30 days, for the rows of one table page."""
+    if not keys:
+        return {}
+    days = _day_keys(local_day(now - (SPARK_DAYS - 1) * DAY), local_day(now))
+    position = {day: index for index, day in enumerate(days)}
+    result = {key: [0] * len(days) for key in keys}
+    marks = ",".join("?" * len(keys))
+    for row in conn.execute(
+        f"SELECT t.content_key AS key, d.day AS day, SUM(d.up) AS up FROM torrent_daily d "
+        f"JOIN torrents t ON t.hash = d.hash WHERE t.content_key IN ({marks}) AND d.day >= ? "
+        "GROUP BY t.content_key, d.day",
+        [*keys, days[0]],
+    ):
+        if row["day"] in position:
+            result[row["key"]][position[row["day"]]] = row["up"]
+    return result
 
 
 def list_contents(
@@ -624,7 +648,12 @@ def list_contents(
     *,
     sort: str = "efficiency",
     descending: bool = True,
+    q: str = "",
+    tracker: str | None = None,
+    category: str | None = None,
+    tag: str | None = None,
     dead_days: int | None = None,
+    known_swarm: bool = False,
     window: int = 30,
     limit: int = 100,
     offset: int = 0,
@@ -633,22 +662,46 @@ def list_contents(
     if sort not in CONTENT_SORTS:
         raise BadRequest(f"Tri inconnu : {sort}")
     join, params = _window_join(now, window)
-    having = ""
+    # A content matches when any of its torrents does, and all of them stay in the totals.
+    matches: list[str] = []
+    if q:
+        matches.append("name LIKE ? ESCAPE '\\'")
+        params.append(f"%{_like_escape(q)}%")
+    if tracker is not None:
+        matches.append("tracker = ?")
+        params.append(tracker)
+    if category is not None:
+        matches.append("category = ?")
+        params.append(category)
+    if tag is not None:
+        matches.append("(', ' || tags || ',') LIKE ? ESCAPE '\\'")
+        params.append(f"%, {_like_escape(tag)},%")
+    filters_sql = "".join(
+        f" AND t.content_key IN (SELECT content_key FROM torrents WHERE removed_at IS NULL AND {match})"
+        for match in matches
+    )
+    conditions: list[str] = []
     if dead_days is not None:
         limit_ts = now - dead_days * DAY
-        having = "HAVING last_activity < ? AND added_on < ?"
+        conditions.append("last_activity < ? AND added_on < ?")
         params += [limit_ts, limit_ts]
+    if known_swarm:
+        conditions.append("seeders >= 0")
+    having = f"HAVING {' AND '.join(conditions)}" if conditions else ""
     base = f"""
-        SELECT MIN(t.added_on) AS added_on, t.name AS name, MAX(t.size) AS size,
-            COUNT(*) AS torrents, GROUP_CONCAT(DISTINCT t.tracker) AS trackers,
-            SUM(t.uploaded) AS uploaded, SUM(t.uploaded) * 1.0 / MAX(MAX(t.size), 1) AS efficiency,
+        SELECT t.content_key AS content_key, MIN(t.added_on) AS added_on, MIN(t.name) AS name,
+            MAX(t.size) AS size, COUNT(*) AS torrents, GROUP_CONCAT(DISTINCT t.tracker) AS trackers,
+            SUM(t.uploaded) AS uploaded, SUM(t.downloaded) AS downloaded,
+            CASE WHEN SUM(t.downloaded) > 0 THEN SUM(t.uploaded) * 1.0 / SUM(t.downloaded) END AS ratio,
+            SUM(t.uploaded) * 1.0 / MAX(MAX(t.size), 1) AS efficiency,
             SUM(COALESCE(w.up, 0)) AS up_period,
             MAX(CASE WHEN t.last_activity > 0 THEN t.last_activity ELSE t.added_on END) AS last_activity,
-            MAX(t.popularity) AS popularity, SUM(MAX(t.num_incomplete, 0)) AS leechers,
-            t.hash AS hash
+            MAX(t.seeding_time) AS seeding_time, MAX(t.popularity) AS popularity,
+            MAX(t.num_complete) AS seeders, SUM(MAX(t.num_incomplete, 0)) AS leechers,
+            MIN(t.hash) AS hash
         FROM torrents t
         {join}
-        WHERE t.removed_at IS NULL
+        WHERE t.removed_at IS NULL{filters_sql}
         GROUP BY t.content_key
         {having}
     """
@@ -656,16 +709,298 @@ def list_contents(
         f"SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS size FROM ({base})", params
     ).fetchone()
     direction = "DESC" if descending else "ASC"
-    rows = conn.execute(
-        f"SELECT * FROM ({base}) ORDER BY {CONTENT_SORTS[sort]} {direction}, hash LIMIT ? OFFSET ?",
-        [*params, limit, offset],
-    ).fetchall()
+    rows = [
+        dict(row)
+        for row in conn.execute(
+            f"SELECT * FROM ({base}) ORDER BY {CONTENT_SORTS[sort]} {direction}, hash LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        )
+    ]
+    sparks = _content_sparklines(conn, [row["content_key"] for row in rows], now)
+    for row in rows:
+        row["spark"] = sparks[row["content_key"]]
     return {
         "total": totals["n"],
         "total_size": totals["size"],
         "all_size": _unique_size(conn),
         "window": window,
-        "rows": [dict(row) for row in rows],
+        "rows": rows,
+    }
+
+
+def contents_summary(conn: sqlite3.Connection) -> dict[str, Any]:
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS contents, COALESCE(SUM(size), 0) AS size,
+            COALESCE(SUM(uploaded), 0) AS uploaded,
+            COALESCE(SUM(uploaded = 0), 0) AS never_uploaded,
+            COALESCE(SUM(CASE WHEN uploaded = 0 THEN size ELSE 0 END), 0) AS never_uploaded_size,
+            COALESCE(SUM(torrents > 1), 0) AS cross_seeded
+        FROM (
+            SELECT MAX(size) AS size, SUM(uploaded) AS uploaded, COUNT(*) AS torrents
+            FROM torrents WHERE removed_at IS NULL GROUP BY content_key
+        )
+        """
+    ).fetchone()
+    result = dict(row)
+    result["efficiency"] = round(row["uploaded"] / row["size"], 3) if row["size"] else None
+    return result
+
+
+def top_contents(conn: sqlite3.Connection, range_key: str, now: int, limit: int = 10) -> dict[str, Any]:
+    """Contents that sent the most over a range, with hourly precision while it is kept."""
+    _check_range(range_key)
+    seconds = RANGES[range_key]
+    if seconds is not None and seconds <= 365 * DAY:
+        start = now - seconds
+        source = "SELECT hash, SUM(up) AS up FROM torrent_hourly WHERE hour >= ? GROUP BY hash"
+        value: Any = start - start % 3600
+    else:
+        source = "SELECT hash, SUM(up) AS up FROM torrent_daily WHERE day >= ? GROUP BY hash"
+        value = "0000-00-00"
+    rows = conn.execute(
+        f"""
+        SELECT t.content_key AS content_key, MIN(t.name) AS name, MAX(t.size) AS size,
+            COUNT(*) AS torrents, GROUP_CONCAT(DISTINCT t.tracker) AS trackers,
+            COALESCE(SUM(w.up), 0) AS up_period, SUM(t.uploaded) AS uploaded,
+            SUM(t.uploaded) * 1.0 / MAX(MAX(t.size), 1) AS efficiency,
+            MAX(t.popularity) AS popularity
+        FROM torrents t LEFT JOIN ({source}) w ON w.hash = t.hash
+        GROUP BY t.content_key HAVING COALESCE(SUM(w.up), 0) > 0
+        ORDER BY up_period DESC, content_key LIMIT ?
+        """,
+        (value, limit),
+    ).fetchall()
+    return {"rows": [dict(row) for row in rows]}
+
+
+def _tracker_slots(conn: sqlite3.Connection) -> dict[str, int]:
+    """Same colors as the tracker page: top trackers by upload, ordered by name."""
+    top = [
+        row[0]
+        for row in conn.execute(
+            "SELECT tracker FROM torrents GROUP BY tracker ORDER BY SUM(uploaded) DESC LIMIT ?",
+            (MAX_STACK_SERIES,),
+        )
+    ]
+    return {key: index for index, key in enumerate(sorted(top, key=str.lower))}
+
+
+CONTENT_CURVE_POINTS = 400
+
+
+def _content_series(
+    conn: sqlite3.Connection,
+    torrents: list[dict[str, Any]],
+    size: int,
+    slots: dict[str, int],
+    range_key: str,
+    now: int,
+) -> dict[str, Any]:
+    """Add up per-torrent samples into one curve, holding each torrent's last known value."""
+    hashes = [torrent["hash"] for torrent in torrents]
+    tracker_of = {t["hash"]: (t["tracker"] if t["tracker"] in slots else None) for t in torrents}
+    seconds = RANGES[range_key]
+    start = now - seconds if seconds else 0
+    columns = "uploaded, popularity, seeders, leechers"
+    state: dict[str, dict[str, Any]] = {}
+    has_baseline = False
+    for torrent in torrents:
+        before = conn.execute(
+            f"SELECT {columns} FROM torrent_samples WHERE hash = ? AND ts < ? ORDER BY ts DESC LIMIT 1",
+            (torrent["hash"], start),
+        ).fetchone()
+        has_baseline = has_baseline or before is not None
+        # No older value: its first sample avoids a jump when this torrent appears in the sum.
+        first = before or conn.execute(
+            f"SELECT {columns} FROM torrent_samples WHERE hash = ? ORDER BY ts LIMIT 1",
+            (torrent["hash"],),
+        ).fetchone()
+        state[torrent["hash"]] = (
+            dict(first)
+            if first
+            else {
+                "uploaded": torrent["uploaded"],
+                "popularity": torrent["popularity"],
+                "seeders": torrent["num_complete"],
+                "leechers": torrent["num_incomplete"],
+            }
+        )
+
+    points: list[dict[str, Any]] = []
+    keys = sorted({tracker_of[h] for h in hashes}, key=lambda key: (key is None, (key or "").lower()))
+
+    def snapshot(ts: int) -> dict[str, Any]:
+        seeders = [s["seeders"] for s in state.values() if s["seeders"] >= 0]
+        leechers = [s["leechers"] for s in state.values() if s["leechers"] >= 0]
+        by_tracker = {key: 0 for key in keys}
+        for torrent_hash, values in state.items():
+            by_tracker[tracker_of[torrent_hash]] += values["uploaded"]
+        uploaded = sum(by_tracker.values())
+        return {
+            "ts": ts,
+            "uploaded": uploaded,
+            "efficiency": uploaded / max(size, 1),
+            "popularity": max(s["popularity"] for s in state.values()),
+            "seeders": sum(seeders) if seeders else None,
+            "leechers": sum(leechers) if leechers else None,
+            "by_tracker": by_tracker,
+        }
+
+    if has_baseline:
+        points.append(snapshot(start))
+    span = seconds if seconds else max(now - min(t["first_seen"] for t in torrents), 60)
+    step = max(60, span // CONTENT_CURVE_POINTS)
+    marks = ",".join("?" * len(hashes))
+    last_bucket = None
+    for sample in conn.execute(
+        f"SELECT hash, ts, {columns} FROM torrent_samples WHERE hash IN ({marks}) "
+        "AND ts >= ? AND tier >= ? ORDER BY ts",
+        [*hashes, start, _sample_tier(range_key)],
+    ):
+        state[sample["hash"]] = dict(sample)
+        bucket = sample["ts"] // step
+        # The very first point stays, so that a recent content still draws a line.
+        if bucket == last_bucket and len(points) >= 2:
+            points[-1] = snapshot(sample["ts"])
+        else:
+            points.append(snapshot(sample["ts"]))
+        last_bucket = bucket
+
+    # Close the curve on the current values, as samples are only stored on change.
+    active = [t for t in torrents if t["removed_at"] is None]
+    if active and points and max(t["last_seen"] for t in active) > points[-1]["ts"]:
+        for torrent in active:
+            state[torrent["hash"]] = {
+                "uploaded": torrent["uploaded"],
+                "popularity": torrent["popularity"],
+                "seeders": torrent["num_complete"],
+                "leechers": torrent["num_incomplete"],
+            }
+        points.append(snapshot(max(t["last_seen"] for t in active)))
+
+    return {
+        "ts": [point["ts"] for point in points],
+        "uploaded": [point["uploaded"] for point in points],
+        "efficiency": [point["efficiency"] for point in points],
+        "popularity": [point["popularity"] for point in points],
+        "seeders": [point["seeders"] for point in points],
+        "leechers": [point["leechers"] for point in points],
+        "by_tracker": [
+            {
+                "key": key,
+                "slot": slots[key] if key is not None else MAX_STACK_SERIES,
+                "values": [point["by_tracker"][key] for point in points],
+            }
+            for key in keys
+        ],
+    }
+
+
+def _content_volume(
+    conn: sqlite3.Connection,
+    torrents: list[dict[str, Any]],
+    slots: dict[str, int],
+    range_key: str,
+    now: int,
+) -> dict[str, Any]:
+    kind, keys = _buckets(conn, range_key, now, per_torrent=True)
+    position = {key: index for index, key in enumerate(keys)}
+    tracker_of = {t["hash"]: (t["tracker"] if t["tracker"] in slots else None) for t in torrents}
+    names = sorted(set(tracker_of.values()), key=lambda key: (key is None, (key or "").lower()))
+    series = {name: [0] * len(keys) for name in names}
+    dl = [0] * len(keys)
+    marks = ",".join("?" * len(torrents))
+    hashes = [t["hash"] for t in torrents]
+    if kind in STEPS:
+        rows = conn.execute(
+            f"SELECT hash, hour AS bucket, up, dl FROM torrent_hourly WHERE hash IN ({marks}) AND hour >= ?",
+            [*hashes, keys[0]],
+        )
+    else:
+        rows = conn.execute(
+            f"SELECT hash, day AS bucket, up, dl FROM torrent_daily WHERE hash IN ({marks}) AND day >= ?",
+            [*hashes, _first_day(kind, keys)],
+        )
+    for row in rows:
+        index = position.get(_bucket_key(kind, row["bucket"]))
+        if index is not None:
+            series[tracker_of[row["hash"]]][index] += row["up"]
+            dl[index] += row["dl"]
+    return {
+        "kind": kind,
+        "keys": keys,
+        "series": [
+            {
+                "key": name,
+                "slot": slots[name] if name is not None else MAX_STACK_SERIES,
+                "values": series[name],
+            }
+            for name in names
+        ],
+        "dl": dl,
+    }
+
+
+def content_detail(
+    conn: sqlite3.Connection, key: str, range_key: str, now: int
+) -> dict[str, Any] | None:
+    _check_range(range_key)
+    if not key or len(key) > 1000:
+        raise BadRequest("Contenu invalide")
+    every = [
+        dict(row)
+        for row in conn.execute(
+            f"SELECT {TORRENT_COLUMNS}, t.first_seen, t.last_seen FROM torrents t "
+            "WHERE t.content_key = ? ORDER BY t.uploaded DESC",
+            (key,),
+        )
+    ]
+    if not every:
+        return None
+    active = [t for t in every if t["removed_at"] is None]
+    size = max(t["size"] for t in every)
+    slots = _tracker_slots(conn)
+    sparks = _sparklines(conn, [t["hash"] for t in every], now)
+    for torrent in every:
+        torrent["spark"] = sparks[torrent["hash"]]
+    volume = _content_volume(conn, every, slots, range_key, now)
+    series = _content_series(conn, every, size, slots, range_key, now)
+    uploaded = sum(t["uploaded"] for t in every)
+    downloaded = sum(t["downloaded"] for t in every)
+    scope = active or every
+    added = min((t["added_on"] for t in every if t["added_on"] > 0), default=0)
+    first_sample = conn.execute(
+        "SELECT MIN(s.ts) FROM torrent_samples s JOIN torrents t ON t.hash = s.hash "
+        "WHERE t.content_key = ?",
+        (key,),
+    ).fetchone()[0]
+    return {
+        "content": {
+            "key": key,
+            "name": min(t["name"] for t in every),
+            "size": size,
+            "torrents": len(every),
+            "active": len(active),
+            "trackers": sorted({t["tracker"] for t in scope}, key=str.lower),
+            "categories": sorted({t["category"] for t in scope if t["category"]}, key=str.lower),
+            "uploaded": uploaded,
+            "downloaded": downloaded,
+            "ratio": round(uploaded / downloaded, 3) if downloaded else None,
+            "efficiency": round(uploaded / max(size, 1), 3),
+            "up_per_day": uploaded * DAY // max(1, now - added) if added else None,
+            "popularity": max(t["popularity"] for t in scope),
+            "seeders": max(t["num_complete"] for t in scope),
+            "leechers": sum(max(t["num_incomplete"], 0) for t in scope),
+            "added_on": added,
+            "last_activity": max(t["last_activity"] for t in every),
+            "seeding_time": max(t["seeding_time"] for t in every),
+        },
+        "first_sample": first_sample,
+        "up_period": sum(sum(item["values"]) for item in volume["series"]),
+        "series": series,
+        "volume": volume,
+        "torrents": every,
     }
 
 

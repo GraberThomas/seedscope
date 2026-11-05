@@ -243,6 +243,41 @@ class CollectorTest(unittest.TestCase):
             self.collector.run(stop)
         self.assertEqual(client.full_polls, 2)
 
+    def test_manual_request_forces_a_full_collection(self):
+        stop = threading.Event()
+        client = SlowLoopClient(stop, self.collector.state.wake, stop_after=2)
+        self.collector.client = client
+        settings.save(self.conn, settings.Intervals(30, 3600))
+        self.assertTrue(self.collector.state.request_full_collection(1000.0, cooldown=10))
+        self.collector.run(stop)
+        self.assertEqual(client.full_polls, 1)  # first cycle: forced, and due anyway
+        self.assertFalse(self.collector.state.force_full)
+        self.assertGreater(self.collector.state.snapshot()["last_full_success"], 0)
+        self.assertFalse(self.collector.state.request_full_collection(1005.0, cooldown=10))
+        self.assertTrue(self.collector.state.request_full_collection(1011.0, cooldown=10))
+
+    def test_manual_request_collects_torrents_before_the_interval_elapsed(self):
+        stop = threading.Event()
+        state = self.collector.state
+
+        class RequestingClient(SlowLoopClient):
+            def torrents(inner, active_only=False):  # noqa: N805
+                result = super().torrents(active_only)
+                if active_only and inner.global_polls == 1:
+                    state.request_full_collection(1000.0, cooldown=10)
+                return result
+
+        client = RequestingClient(stop, state.wake, stop_after=2)
+        self.collector.client = client
+        settings.save(self.conn, settings.Intervals(30, 3600))
+        self.collector.run(stop)
+        self.assertEqual(client.full_polls, 2)
+
+    def test_live_rows_carry_their_content(self):
+        self.client.active = [torrent(upspeed=5)]
+        self.collector.poll_live(1000)
+        self.assertEqual(self.collector.state.snapshot()["active"][0]["content_key"], content_key("Demo.Movie.2024", 10 * GIB))
+
     def test_tick_collects_everything_and_prune_respects_retention(self):
         self.client.state = {
             "alltime_ul": 100,

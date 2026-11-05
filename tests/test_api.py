@@ -4,6 +4,7 @@ import tempfile
 import threading
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -178,6 +179,63 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(grouped["uploaded"], 9 * GIB)
         self.assertAlmostEqual(grouped["efficiency"], 0.9)
 
+    def test_contents_filters_keep_all_torrents_of_a_match_and_sparkline(self):
+        data = self.get("/api/contents?tag=manuel&sort=size")
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(data["rows"][0]["torrents"], 2)
+        self.assertEqual(data["rows"][0]["uploaded"], 9 * GIB)
+        self.assertEqual(data["rows"][0]["spark"][-1], 3 * GIB)
+        self.assertEqual(self.get("/api/contents?q=renamed")["total"], 1)
+        self.assertEqual(self.get("/api/contents?tracker=other.example.net")["total"], 1)
+        self.assertEqual(self.get("/api/contents?category=")["total"], 1)
+        self.assertEqual(self.get("/api/contents?sort=up_period&window=7")["rows"][0]["up_period"], 3 * GIB)
+        self.assertEqual(self.status("/api/contents?sort=hash"), 400)
+
+    def test_contents_summary_and_top(self):
+        summary = self.get("/api/contents/summary")
+        self.assertEqual(summary["contents"], 2)
+        self.assertEqual(summary["cross_seeded"], 1)
+        self.assertEqual(summary["never_uploaded"], 1)
+        self.assertEqual(summary["never_uploaded_size"], 20 * GIB)
+        top = self.get("/api/contents/top?range=24h")["rows"]
+        self.assertEqual(len(top), 1)
+        self.assertEqual(top[0]["up_period"], 3 * GIB)
+        self.assertEqual(top[0]["torrents"], 2)
+        self.assertEqual(self.get("/api/contents/top?range=all")["rows"][0]["up_period"], 3 * GIB)
+        self.assertEqual(self.status("/api/contents/top?range=x"), 400)
+
+    def test_content_detail_adds_up_its_torrents(self):
+        key = self.get("/api/contents?tag=manuel")["rows"][0]["content_key"]
+        data = self.get("/api/content?key=" + urllib.parse.quote(key))
+        content = data["content"]
+        self.assertEqual(content["torrents"], 2)
+        self.assertEqual(content["uploaded"], 9 * GIB)
+        self.assertEqual(content["efficiency"], 0.9)
+        self.assertEqual(content["trackers"], ["other.example.net", "tk.example.org"])
+        self.assertEqual(data["series"]["uploaded"], [6 * GIB, 9 * GIB])
+        self.assertEqual(data["series"]["seeders"], [10, 10])
+        self.assertEqual(data["series"]["leechers"], [2, 2])
+        self.assertEqual(data["series"]["efficiency"], [0.6, 0.9])
+        by_tracker = {item["key"]: item["values"] for item in data["series"]["by_tracker"]}
+        self.assertEqual(by_tracker["tk.example.org"], [5 * GIB, 8 * GIB])
+        self.assertEqual(by_tracker["other.example.net"], [GIB, GIB])
+        self.assertEqual(data["up_period"], 3 * GIB)
+        self.assertEqual([t["hash"] for t in data["torrents"]], [HASH_A, HASH_B])
+        self.assertNotIn(PASSKEY, json.dumps(data))
+        for range_key in queries.RANGES:
+            self.assertTrue(
+                self.get(f"/api/content?range={range_key}&key=" + urllib.parse.quote(key))["volume"]["keys"]
+            )
+        self.assertEqual(self.status("/api/content?key=nope"), 404)
+        self.assertEqual(self.status("/api/content"), 400)
+        self.assertEqual(self.status("/api/content?range=x&key=nope"), 400)
+
+    def test_idle_content_gets_a_flat_line_on_short_ranges(self):
+        key = self.get("/api/contents?sort=size")["rows"][0]["content_key"]
+        series = queries.content_detail(self.conn, key, "1h", NOW + 2 * 3600)["series"]
+        self.assertGreaterEqual(len(series["ts"]), 1)
+        self.assertEqual(series["uploaded"][0], series["uploaded"][-1])
+
     def test_dead_content_needs_all_of_its_torrents_idle(self):
         data = self.get("/api/contents?dead_days=30")
         self.assertEqual(data["total"], 1)
@@ -289,6 +347,24 @@ class SettingsApiTest(unittest.TestCase):
         self.assertEqual(self.post(valid), 200)
         self.assertTrue(self.state.wake.is_set())
         self.assertEqual(self.current()["torrent_interval"], 600)
+
+    def collect(self, content_type="application/json"):
+        request = urllib.request.Request(
+            self.base + "/api/collect", data=b"{}", headers={"Content-Type": content_type}
+        )
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status
+        except urllib.error.HTTPError as exc:
+            return exc.code
+
+    def test_manual_collection_wakes_the_collector_with_a_cooldown(self):
+        self.assertEqual(self.collect(content_type="text/plain"), 415)
+        self.assertFalse(self.state.force_full)
+        self.assertEqual(self.collect(), 202)
+        self.assertTrue(self.state.force_full)
+        self.assertTrue(self.state.wake.is_set())
+        self.assertEqual(self.collect(), 429)
 
     def test_rejects_values_outside_the_allowed_list(self):
         for payload in (

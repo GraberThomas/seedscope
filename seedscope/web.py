@@ -19,6 +19,7 @@ from .config import Config
 log = logging.getLogger("seedscope.web")
 
 MAX_SETTINGS_BODY = 1024
+MANUAL_COLLECT_COOLDOWN = 10
 STATIC_DIR = Path(__file__).parent / "static"
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -109,6 +110,11 @@ def make_handler(
             now,
             sort=params.text("sort", "efficiency"),
             descending=params.descending(),
+            q=params.text("q")[:200],
+            tracker=params.optional("tracker"),
+            category=params.optional("category"),
+            tag=params.optional("tag"),
+            known_swarm=params.text("known_swarm") == "1",
             dead_days=params.integer("dead_days", 30, 1, 3650) if dead is not None else None,
             window=params.integer("window", 30, 1, 365),
             limit=params.integer("limit", 100, 1, 500),
@@ -117,6 +123,15 @@ def make_handler(
 
     def api_breakdown(conn: sqlite3.Connection, params: Params, now: int) -> Any:
         return queries.breakdown(conn, params.text("by", "tracker"), params.text("range", "30d"), now)
+
+    def api_contents_summary(conn: sqlite3.Connection, params: Params, now: int) -> Any:
+        return queries.contents_summary(conn)
+
+    def api_contents_top(conn: sqlite3.Connection, params: Params, now: int) -> Any:
+        return queries.top_contents(conn, params.text("range", "7d"), now)
+
+    def api_content(conn: sqlite3.Connection, params: Params, now: int) -> Any:
+        return queries.content_detail(conn, params.text("key"), params.text("range", "30d"), now)
 
     def api_popularity(conn: sqlite3.Connection, params: Params, now: int) -> Any:
         return queries.popularity(conn)
@@ -142,6 +157,8 @@ def make_handler(
         "/api/torrents": api_torrents,
         "/api/filters": api_filters,
         "/api/contents": api_contents,
+        "/api/contents/summary": api_contents_summary,
+        "/api/contents/top": api_contents_top,
         "/api/breakdown": api_breakdown,
         "/api/popularity": api_popularity,
         "/api/settings": api_settings,
@@ -180,6 +197,8 @@ def make_handler(
                     self._send(HTTPStatus.OK, (STATIC_DIR / filename).read_bytes(), content_type)
                 elif path in routes:
                     self._api(lambda conn, now: routes[path](conn, Params(parts.query), now))
+                elif path == "/api/content":
+                    self._content(Params(parts.query))
                 elif path.startswith("/api/torrent/"):
                     self._torrent(path.removeprefix("/api/torrent/"), Params(parts.query))
                 else:
@@ -194,46 +213,88 @@ def make_handler(
 
         do_HEAD = do_GET  # noqa: N815
 
+        def _api(self, query: Callable[[sqlite3.Connection, int], Any]) -> None:
+            conn = db.connect_readonly(config.db_path)
+            try:
+                self._json(query(conn, int(clock())))
+            finally:
+                conn.close()
+
+        def _content(self, params: Params) -> None:
+            conn = db.connect_readonly(config.db_path)
+            try:
+                detail = api_content(conn, params, int(clock()))
+            finally:
+                conn.close()
+            if detail is None:
+                self._json({"error": "Contenu introuvable"}, HTTPStatus.NOT_FOUND)
+            else:
+                self._json(detail)
+
+        def _torrent(self, torrent_hash: str, params: Params) -> None:
+            conn = db.connect_readonly(config.db_path)
+            try:
+                detail = queries.torrent_detail(
+                    conn, torrent_hash, params.text("range", "30d"), int(clock())
+                )
+            finally:
+                conn.close()
+            if detail is None:
+                self._json({"error": "Torrent introuvable"}, HTTPStatus.NOT_FOUND)
+            else:
+                self._json(detail)
+
         def do_POST(self) -> None:  # noqa: N802
-            if urlsplit(self.path).path != "/api/settings":
+            path = urlsplit(self.path).path
+            if path not in ("/api/settings", "/api/collect"):
                 self._json({"error": "Methode non autorisee"}, HTTPStatus.METHOD_NOT_ALLOWED)
                 return
             try:
-                self._save_settings()
+                body = self._read_json_body()
+                if body is None:
+                    return
+                if path == "/api/settings":
+                    self._save_settings(body)
+                else:
+                    self._request_collection()
             except settings.InvalidSetting as exc:
                 self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             except (BrokenPipeError, ConnectionResetError):
                 pass
             except Exception:
-                log.exception("Erreur a l'enregistrement des parametres")
+                log.exception("Erreur sur %s", path)
                 self._json({"error": "Erreur interne"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
-        def _save_settings(self) -> None:
-            # Another website must not be able to change settings through a visitor's browser:
+        def _read_json_body(self) -> dict[str, Any] | None:
+            """Return the JSON object sent, or answer with an error and return None."""
+            # Another website must not be able to act through a visitor's browser:
             # a JSON body forces a CORS preflight, which this server never accepts.
             content_type = self.headers.get("Content-Type", "").split(";")[0].strip()
             if content_type != "application/json":
                 self._json({"error": "JSON attendu"}, HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
-                return
+                return None
             origin = self.headers.get("Origin")
             if origin is not None and urlsplit(origin).netloc != self.headers.get("Host"):
                 self._json({"error": "Origine refusee"}, HTTPStatus.FORBIDDEN)
-                return
+                return None
             try:
                 length = int(self.headers.get("Content-Length", ""))
             except ValueError:
                 length = -1
             if not 0 < length <= MAX_SETTINGS_BODY:
                 self._json({"error": "Taille invalide"}, HTTPStatus.BAD_REQUEST)
-                return
+                return None
             try:
                 body = json.loads(self.rfile.read(length))
             except ValueError:
                 self._json({"error": "JSON invalide"}, HTTPStatus.BAD_REQUEST)
-                return
+                return None
             if not isinstance(body, dict):
                 self._json({"error": "JSON invalide"}, HTTPStatus.BAD_REQUEST)
-                return
+                return None
+            return body
+
+        def _save_settings(self, body: dict[str, Any]) -> None:
             intervals = settings.validate(body.get("global_interval"), body.get("torrent_interval"))
             conn = db.connect(config.db_path)
             try:
@@ -248,25 +309,15 @@ def make_handler(
                 }
             )
 
-        def _api(self, query: Callable[[sqlite3.Connection, int], Any]) -> None:
-            conn = db.connect_readonly(config.db_path)
-            try:
-                self._json(query(conn, int(clock())))
-            finally:
-                conn.close()
-
-        def _torrent(self, torrent_hash: str, params: Params) -> None:
-            conn = db.connect_readonly(config.db_path)
-            try:
-                detail = queries.torrent_detail(
-                    conn, torrent_hash, params.text("range", "30d"), int(clock())
+        def _request_collection(self) -> None:
+            previous = state.snapshot()["last_full_success"]
+            if not state.request_full_collection(clock(), MANUAL_COLLECT_COOLDOWN):
+                self._json(
+                    {"error": "Collecte deja demandee, patientez quelques secondes"},
+                    HTTPStatus.TOO_MANY_REQUESTS,
                 )
-            finally:
-                conn.close()
-            if detail is None:
-                self._json({"error": "Torrent introuvable"}, HTTPStatus.NOT_FOUND)
-            else:
-                self._json(detail)
+                return
+            self._json({"previous_full_success": previous}, HTTPStatus.ACCEPTED)
 
     return Handler
 

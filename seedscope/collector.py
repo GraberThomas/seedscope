@@ -73,7 +73,10 @@ class LiveState:
     connection_status: str = ""
     last_success: int = 0
     last_error: str = ""
-    wake: threading.Event = field(default_factory=threading.Event)  # settings were changed
+    wake: threading.Event = field(default_factory=threading.Event)  # settings or manual request
+    force_full: bool = False  # a manual refresh asked for a complete collection
+    last_full_success: int = 0
+    last_manual_request: float = 0.0
 
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
@@ -83,7 +86,24 @@ class LiveState:
                 "connection_status": self.connection_status,
                 "last_success": self.last_success,
                 "last_error": self.last_error,
+                "last_full_success": self.last_full_success,
             }
+
+    def request_full_collection(self, now: float, cooldown: float) -> bool:
+        """Ask for an immediate full collection; False while the cooldown is running."""
+        with self.lock:
+            if now - self.last_manual_request < cooldown:
+                return False
+            self.last_manual_request = now
+            self.force_full = True
+        self.wake.set()
+        return True
+
+    def take_force_full(self) -> bool:
+        with self.lock:
+            forced = self.force_full
+            self.force_full = False
+            return forced
 
 
 def store_global_sample(
@@ -197,6 +217,7 @@ class Collector:
                 {
                     "hash": t["hash"],
                     "name": t.get("name", ""),
+                    "content_key": content_key(str(t.get("name") or ""), int(t.get("size") or 0)),
                     "tracker": self._alias(tracker_host(t.get("tracker", ""))),
                     "up_speed": int(t.get("upspeed") or 0),
                     "dl_speed": int(t.get("dlspeed") or 0),
@@ -381,6 +402,8 @@ class Collector:
         with self.state.lock:
             self.state.last_success = now
             self.state.last_error = ""
+            if include_torrents:
+                self.state.last_full_success = now
 
     def run(self, stop: threading.Event) -> None:
         """Poll until ``stop`` is set. Errors are logged and never end the loop."""
@@ -396,7 +419,8 @@ class Collector:
                     self.client.login()
                     logged_in = True
                 # One second of tolerance, or a slight drift would skip a whole cycle.
-                include_torrents = started - last_torrent_poll >= intervals.torrent_interval - 1
+                forced = self.state.take_force_full()
+                include_torrents = forced or started - last_torrent_poll >= intervals.torrent_interval - 1
                 self.tick(int(started), include_torrents)
                 if include_torrents:
                     last_torrent_poll = started

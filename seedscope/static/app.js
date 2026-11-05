@@ -5,7 +5,7 @@ const WEEKDAYS = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
 const RANGES = [['1h', '1 h'], ['6h', '6 h'], ['24h', '24 h'], ['3d', '3 j'], ['7d', '7 j'], ['30d', '30 j'], ['90d', '90 j'], ['180d', '6 mois'], ['1y', '1 an'], ['all', 'Tout']];
 const WINDOWS = [[1, '24 h'], [7, '7 j'], [30, '30 j'], [90, '90 j'], [365, '1 an']];
 const BUCKET_NAMES = { min5: 'tranche de 5 min', min30: 'tranche de 30 min', hour: 'heure', hour6: 'tranche de 6 h', day: 'jour', week: 'semaine', month: 'mois' };
-const NAV = [['/', 'Aperçu'], ['/activite', 'Activité'], ['/torrents', 'Torrents'], ['/popularite', 'Popularité'], ['/trackers', 'Trackers'], ['/rentabilite', 'Rentabilité'], ['/parametres', 'Paramètres']];
+const NAV = [['/', 'Aperçu'], ['/activite', 'Activité'], ['/contenus', 'Contenus'], ['/torrents', 'Torrents'], ['/popularite', 'Popularité'], ['/trackers', 'Trackers'], ['/rentabilite', 'Rentabilité'], ['/parametres', 'Paramètres']];
 const NO_DATA = 'Pas encore assez de données : la collecte vient de démarrer, cette vue se remplira avec le temps.';
 const UP = 'var(--series-1)';
 const DOWN = 'var(--series-2)';
@@ -19,7 +19,9 @@ const ui = {
   contentSort: { key: 'size', desc: true },
   contentPage: 0,
   contentWindow: 30,
-  popularity: { mode: 'popularity', page: 0 },
+  popularity: { mode: 'popularity', scope: 'content', page: 0 },
+  liveScope: 'content',
+  contents: { sort: 'uploaded', desc: true, q: '', tracker: '', category: '', tag: '', window: 30, page: 0 },
   torrents: { sort: 'uploaded', desc: true, q: '', tracker: '', category: '', tag: '', status: 'active', window: 7, page: 0 },
 };
 const PAGE_SIZE = 50;
@@ -195,6 +197,9 @@ function tableView(buildColumns, buildRows) {
 }
 
 const torrentLink = (row) => h('a', { href: `#/torrent/${row.hash}`, text: row.name });
+const contentHref = (key) => `#/contenu/${encodeURIComponent(key)}`;
+const contentLink = (row) => h('a', { href: contentHref(row.content_key), text: row.name });
+const scopeFilter = (current, onChange) => segmented('Regrouper par', [['content', 'Par contenu'], ['torrent', 'Par torrent']], current, onChange);
 function tags(value) {
   const list = (value || '').split(',').map((t) => t.trim()).filter(Boolean);
   return list.length ? h('span', {}, list.map((tag) => h('span', { class: 'tag', text: tag }))) : '';
@@ -211,7 +216,7 @@ function pager(total, page, onPage, size = PAGE_SIZE) {
 
 // ---- Pages ----
 async function overview() {
-  const [summary, series] = await Promise.all([api('/api/summary'), api(`/api/timeseries?range=${ui.range}`)]);
+  const [summary, series, top] = await Promise.all([api('/api/summary'), api(`/api/timeseries?range=${ui.range}`), api(`/api/contents/top?range=${ui.range}`)]);
   const { labels, tips } = bucketLabels(series.volume.kind, series.volume.keys);
   const volumeName = BUCKET_NAMES[series.volume.kind];
   const stats = series.stats;
@@ -261,7 +266,7 @@ async function overview() {
         tile('Envoyé aujourd’hui', bytes(summary.up_today)),
         tile('Envoyé sur 7 jours', bytes(summary.up_7d), periodDelta(summary.up_7d, summary.up_7d_previous, 'aux 7 jours précédents')),
         tile('Envoyé sur 30 jours', bytes(summary.up_30d), periodDelta(summary.up_30d, summary.up_30d_previous, 'aux 30 jours précédents')),
-        tile('Torrents', summary.torrents.toLocaleString('fr-FR'), h('span', { class: 'delta', text: `${summary.contents} contenus, ${summary.active} actifs` })),
+        tile('Contenus', summary.contents.toLocaleString('fr-FR'), h('span', { class: 'delta', text: `${summary.torrents} torrents, ${summary.active} actifs` })),
         tile('Volume seedé', `≈ ${bytes(summary.size_unique)}`, h('span', { class: 'delta', text: `Estimation haute, sans doublons (cumul : ${bytes(summary.size_total)})` })))),
     h('div', { class: 'filters' }, rangeFilter()),
     h('div', { class: 'stat-row' },
@@ -292,6 +297,15 @@ async function overview() {
           format: bytes, axisFormat: bytesAxis, binary: true, zero: false, empty: NO_DATA, ariaLabel: 'Upload cumulé',
         }),
         totalsTable())),
+    card('Contenus qui ont le plus envoyé', 'Sur la période choisie, tous trackers confondus',
+      dataTable([
+        { key: 'name', label: 'Contenu', className: 'name', render: contentLink },
+        { key: 'trackers', label: 'Trackers', render: (row) => tags(row.trackers) },
+        { key: 'up_period', label: 'Sur la période', num: true, format: bytes },
+        { key: 'uploaded', label: 'Envoyé au total', num: true, format: bytes },
+        { key: 'efficiency', label: 'Envoyé / taille', num: true, format: times },
+        { key: 'popularity', label: 'Popularité', num: true, format: popularityText },
+      ], top.rows, { empty: 'Aucun envoi enregistré sur cette période.' })),
     card('Évolution du ratio', 'Tel que calculé par qBittorrent : il peut différer de celui des trackers',
       lineChart({
         ts: series.ts,
@@ -305,17 +319,37 @@ async function overview() {
 async function activity() {
   const [live, cal, heat] = await Promise.all([api('/api/live'), api('/api/calendar'), api('/api/heatmap')]);
   const uploading = live.rows.filter((row) => row.up_speed > 0 || row.dl_speed > 0);
+  const groups = new Map();
+  for (const row of uploading) {
+    const group = groups.get(row.content_key) || { content_key: row.content_key, name: row.name, up_speed: 0, dl_speed: 0, leechers: 0, torrents: 0, trackers: new Set() };
+    group.up_speed += row.up_speed;
+    group.dl_speed += row.dl_speed;
+    group.leechers += row.leechers;
+    group.torrents += 1;
+    group.trackers.add(trackerName(row.tracker));
+    groups.set(row.content_key, group);
+  }
+  const contentRows = [...groups.values()].sort((a, b) => b.up_speed - a.up_speed);
+  const liveTable = ui.liveScope === 'content'
+    ? dataTable([
+      { key: 'name', label: 'Contenu', className: 'name', render: contentLink },
+      { key: 'trackers', label: 'Trackers', render: (row) => tags([...row.trackers].join(',')) },
+      { key: 'up_speed', label: 'Envoi', num: true, format: speed },
+      { key: 'dl_speed', label: 'Réception', num: true, format: speed },
+      { key: 'leechers', label: 'Pairs', num: true },
+    ], contentRows, { empty: 'Aucun transfert en ce moment.' })
+    : dataTable([
+      { key: 'name', label: 'Torrent', className: 'name', render: torrentLink },
+      { key: 'tracker', label: 'Tracker', className: 'nowrap', format: trackerName },
+      { key: 'up_speed', label: 'Envoi', num: true, format: speed },
+      { key: 'dl_speed', label: 'Réception', num: true, format: speed },
+      { key: 'leechers', label: 'Pairs', num: true },
+      { key: 'ratio', label: 'Ratio', num: true, format: ratioText },
+    ], uploading, { empty: 'Aucun transfert en ce moment.' });
   const lookup = new Map(heat.cells.map((cell) => [`${cell.weekday}-${cell.hour}`, cell.up]));
   return [
-    card('Top du moment', live.ts ? `Mis à jour ${ago(live.ts)}` : null,
-      dataTable([
-        { key: 'name', label: 'Torrent', className: 'name', render: torrentLink },
-        { key: 'tracker', label: 'Tracker', className: 'nowrap', format: trackerName },
-        { key: 'up_speed', label: 'Envoi', num: true, format: speed },
-        { key: 'dl_speed', label: 'Réception', num: true, format: speed },
-        { key: 'leechers', label: 'Pairs', num: true },
-        { key: 'ratio', label: 'Ratio', num: true, format: ratioText },
-      ], uploading, { empty: 'Aucun transfert en ce moment.' })),
+    h('div', { class: 'filters' }, scopeFilter(ui.liveScope, (value) => { ui.liveScope = value; render(); })),
+    card('Top du moment', live.ts ? `Mis à jour ${ago(live.ts)}` : null, liveTable),
     card('Upload par jour', '371 derniers jours',
       calendarChart({ ...cal, format: bytes, formatDay: dayLabel, empty: NO_DATA }),
       tableView(
@@ -435,6 +469,7 @@ async function torrentDetail(hash) {
       tile('Dernière activité', ago(t.last_activity)),
       tile('Tracker', trackerName(t.tracker), null, 'long')),
     t.tags ? h('div', {}, tags(t.tags)) : null,
+    data.siblings.length ? h('a', { class: 'back', href: contentHref(t.content_key), text: `Voir le contenu complet (${data.siblings.length + 1} torrents) →` }) : null,
     h('div', { class: 'filters' }, rangeFilter(), h('span', { class: 'subtle', text: since })),
     card(`Envoyé par ${BUCKET_NAMES[data.volume.kind]}`, `${bytes(data.up_period)} sur la période affichée`,
       barChart({
@@ -465,23 +500,183 @@ async function torrentDetail(hash) {
   ];
 }
 
+async function contentsPage() {
+  const state = ui.contents;
+  const params = {
+    sort: state.sort, dir: state.desc ? 'desc' : 'asc', q: state.q, window: state.window,
+    limit: PAGE_SIZE, offset: state.page * PAGE_SIZE,
+    tracker: state.tracker === '' ? null : state.tracker === '__none' ? '' : state.tracker,
+    category: state.category === '' ? null : state.category === '__none' ? '' : state.category,
+    tag: state.tag === '' ? null : state.tag,
+  };
+  const [data, summary, filters] = await Promise.all([
+    api(`/api/contents?${query(params)}`), api('/api/contents/summary'), api('/api/filters'),
+  ]);
+  const update = (changes) => { Object.assign(state, { page: 0 }, changes); render(); };
+  const onSort = (key) => {
+    update(state.sort === key ? { desc: !state.desc } : { sort: key, desc: key !== 'name' });
+  };
+  let timer;
+  const search = h('input', {
+    type: 'search', placeholder: 'Rechercher un nom…', 'aria-label': 'Rechercher un contenu', value: state.q,
+    oninput: (event) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { update({ q: event.target.value }); }, 300);
+    },
+  });
+  const noneValue = (value) => (value === '' ? '__none' : value);
+  return [
+    h('div', { class: 'stat-row' },
+      tile('Contenus', summary.contents.toLocaleString('fr-FR'), h('span', { class: 'delta', text: `${summary.cross_seeded} sur plusieurs trackers` })),
+      tile('Volume seedé', `≈ ${bytes(summary.size)}`, h('span', { class: 'delta', text: 'Estimation haute' })),
+      tile('Envoyé', bytes(summary.uploaded), h('span', { class: 'delta', text: 'Torrents présents, tous trackers confondus' })),
+      tile('Envoyé / taille', summary.efficiency === null ? '–' : times(summary.efficiency)),
+      tile('Jamais envoyés', summary.never_uploaded.toLocaleString('fr-FR'), h('span', { class: 'delta', text: `≈ ${bytes(summary.never_uploaded_size)}` }))),
+    h('div', { class: 'filters' },
+      search,
+      select('Tracker', [['', 'Tous'], ...filters.trackers.map((t) => [noneValue(t), trackerName(t)])], state.tracker, (v) => update({ tracker: v })),
+      select('Catégorie', [['', 'Toutes'], ...filters.categories.map((c) => [noneValue(c), categoryName(c)])], state.category, (v) => update({ category: v })),
+      select('Tag', [['', 'Tous'], ...filters.tags.map((t) => [t, t])], state.tag, (v) => update({ tag: v })),
+      select('Envoyé sur', WINDOWS.map(([value, label]) => [String(value), label]), String(state.window), (v) => update({ window: Number(v) }))),
+    h('section', { class: 'card' },
+      dataTable([
+        { key: 'name', label: 'Contenu', sortable: true, className: 'name', render: contentLink },
+        { key: 'trackers', label: 'Trackers', render: (row) => tags(row.trackers) },
+        { key: 'size', label: 'Taille', sortable: true, num: true, format: bytes },
+        { key: 'uploaded', label: 'Envoyé', sortable: true, num: true, format: bytes },
+        { key: 'efficiency', label: 'Envoyé / taille', sortable: true, num: true, format: times },
+        { key: 'ratio', label: 'Ratio', sortable: true, num: true, format: ratioText },
+        { key: 'up_period', label: `Sur ${windowName(data.window)}`, sortable: true, num: true, format: bytes },
+        { key: 'spark', label: '30 jours', render: (row) => sparkline(row.spark) },
+        { key: 'popularity', label: 'Popularité', sortable: true, num: true, format: popularityText },
+        { key: 'seeders', label: 'Seeders', sortable: true, num: true, format: swarm },
+        { key: 'leechers', label: 'Leechers', sortable: true, num: true, format: swarm },
+        { key: 'added_on', label: 'Ajouté', sortable: true, num: true, format: dateOf },
+        { key: 'last_activity', label: 'Activité', sortable: true, num: true, format: ago },
+      ], data.rows, { sort: { key: state.sort, desc: state.desc }, onSort }),
+      pager(data.total, state.page, (page) => { state.page = page; render(); })),
+  ];
+}
+
+async function contentDetail(key) {
+  const data = await api(`/api/content?${query({ key, range: ui.range })}`);
+  const c = data.content;
+  const { ts } = data.series;
+  const { labels, tips } = bucketLabels(data.volume.kind, data.volume.keys);
+  const since = data.first_sample ? `Suivi détaillé depuis le ${dateOf(data.first_sample)}` : 'Première mesure au plus tard dans l’heure';
+  const noCurve = 'Pas encore assez de mesures sur cette période : elles sont prises quand quelque chose change, et au moins une fois par heure.';
+  const trackerSeries = (items) => items.map((item) => ({ name: trackerName(item.key), color: SLOT_COLORS[item.slot], values: item.values }));
+  const curve = (title, subtitle, options) => card(title, subtitle, lineChart({ ts, connectGaps: true, zero: false, height: 200, empty: noCurve, ariaLabel: `${title} de ce contenu`, ...options }));
+  const volumeSeries = trackerSeries(data.volume.series);
+  const volumeTotal = data.volume.keys.map((_, i) => volumeSeries.reduce((sum, s) => sum + s.values[i], 0));
+  const samplesTable = () => tableView(
+    () => [
+      { key: 'time', label: 'Date' },
+      { key: 'uploaded', label: 'Envoyé', num: true, format: bytes },
+      { key: 'efficiency', label: 'Envoyé / taille', num: true, format: times },
+      { key: 'popularity', label: 'Popularité', num: true, format: popularityText },
+      { key: 'seeders', label: 'Seeders', num: true, format: swarm },
+      { key: 'leechers', label: 'Leechers', num: true, format: swarm },
+    ],
+    () => ts.map((time, index) => ({
+      time: new Date(time * 1000).toLocaleString('fr-FR'),
+      uploaded: data.series.uploaded[index],
+      efficiency: data.series.efficiency[index],
+      popularity: data.series.popularity[index],
+      seeders: data.series.seeders[index],
+      leechers: data.series.leechers[index],
+    })).reverse(),
+  );
+  return [
+    h('a', { class: 'back', href: '#/contenus', text: '← Tous les contenus' }),
+    h('h1', { text: c.name }),
+    c.active === 0 ? h('div', { class: 'banner', role: 'status' }, h('strong', { text: '⚠ Supprimé' }), 'Plus aucun torrent de ce contenu dans qBittorrent. Son historique est conservé.') : null,
+    h('div', { class: 'tiles' },
+      tile('Envoyé / taille', times(c.efficiency), h('span', { class: 'delta', text: 'Tous trackers confondus' })),
+      tile('Ratio', ratioText(c.ratio), h('span', { class: 'delta', text: `${bytes(c.downloaded)} reçus` })),
+      tile('Envoyé', bytes(c.uploaded), h('span', { class: 'delta', text: c.up_per_day === null ? '' : `≈ ${bytes(c.up_per_day)} par jour depuis l’ajout` })),
+      tile('Taille', bytes(c.size)),
+      tile('Popularité', popularityText(c.popularity), h('span', { class: 'delta', text: 'La meilleure de ses torrents' })),
+      tile('Seeders / leechers', `${swarm(c.seeders)} / ${swarm(c.leechers)}`, h('span', { class: 'delta', text: 'Plus gros tracker / total' })),
+      tile('Temps de seed', duration(c.seeding_time)),
+      tile('Ajouté le', dateOf(c.added_on)),
+      tile('Dernière activité', ago(c.last_activity)),
+      tile('Torrents', `${c.active} sur ${c.torrents}`, h('span', { class: 'delta', text: 'Présents / suivis' }))),
+    h('div', {}, tags(c.trackers.join(',')), tags(c.categories.join(','))),
+    h('div', { class: 'filters' }, rangeFilter(), h('span', { class: 'subtle', text: since })),
+    card(`Envoyé par ${BUCKET_NAMES[data.volume.kind]}`, `${bytes(data.up_period)} sur la période affichée`,
+      barChart({
+        labels, tipLabels: tips, series: volumeSeries, format: bytes, axisFormat: bytesAxis, height: 220,
+        empty: 'Aucun envoi enregistré sur cette période.', ariaLabel: 'Volume envoyé par ce contenu, par tracker',
+      }),
+      volumeTotal.some((value) => value > 0) ? tableView(
+        () => [{ key: 'label', label: 'Période' }, ...volumeSeries.map((s, i) => ({ key: `s${i}`, label: s.name, num: true, format: bytes }))],
+        () => data.volume.keys.map((_, i) => {
+          const row = { label: tips[i] };
+          volumeSeries.forEach((s, k) => { row[`s${k}`] = s.values[i]; });
+          return row;
+        }).reverse(),
+      ) : null),
+    h('div', { class: 'grid-2' },
+      curve('Upload cumulé par tracker', null, { series: trackerSeries(data.series.by_tracker), format: bytes, axisFormat: bytesAxis, binary: true }),
+      curve('Envoyé / taille', 'Combien de fois ce contenu a été renvoyé', { series: [{ name: 'Envoyé / taille', color: UP, values: data.series.efficiency }], format: (v) => number(v, 3) }),
+      curve('Popularité', 'La meilleure de ses torrents', { series: [{ name: 'Popularité', color: UP, values: data.series.popularity }], format: (v) => number(v, 4) }),
+      curve('Seeders et leechers', 'Additionnés sur ses trackers', {
+        series: [{ name: 'Seeders', color: UP, values: data.series.seeders }, { name: 'Leechers', color: DOWN, values: data.series.leechers }],
+        format: (v) => number(v, 0), zero: true,
+      })),
+    h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { text: 'Mesures de ces courbes' })), samplesTable()),
+    card('Ses torrents', null,
+      dataTable([
+        { key: 'name', label: 'Torrent', className: 'name', render: torrentLink },
+        { key: 'tracker', label: 'Tracker', className: 'nowrap', format: trackerName },
+        { key: 'uploaded', label: 'Envoyé', num: true, format: bytes },
+        { key: 'ratio', label: 'Ratio', num: true, format: ratioText },
+        { key: 'spark', label: '30 jours', render: (row) => sparkline(row.spark) },
+        { key: 'popularity', label: 'Popularité', num: true, format: popularityText },
+        { key: 'seeders', label: 'Seeders', num: true, render: (row) => swarm(row.num_complete) },
+        { key: 'leechers', label: 'Leechers', num: true, render: (row) => swarm(row.num_incomplete) },
+        { key: 'state', label: 'État', render: (row) => (row.removed_at ? 'Supprimé' : 'Présent') },
+      ], data.torrents)),
+  ];
+}
+
 const POPULARITY_MODES = {
   popularity: { label: 'Les plus populaires', sort: 'popularity', desc: true, note: 'Ratio divisé par le nombre de mois actifs : ce qui a le mieux tourné pour toi, selon qBittorrent.' },
-  leechers: { label: 'Les plus demandés', sort: 'leechers', desc: true, note: 'Leechers annoncés par le tracker en ce moment.' },
-  lonely: { label: 'Les moins seedés', sort: 'seeders', desc: false, note: 'Seeders annoncés par le tracker : ces torrents dépendent le plus de toi.' },
+  leechers: { label: 'Les plus demandés', sort: 'leechers', desc: true, note: 'Leechers annoncés par les trackers en ce moment.' },
+  lonely: { label: 'Les moins seedés', sort: 'seeders', desc: false, note: 'Seeders annoncés par les trackers : ces contenus dépendent le plus de toi.' },
 };
 
 async function popularityPage() {
   const state = ui.popularity;
   const mode = POPULARITY_MODES[state.mode];
+  const byContent = state.scope === 'content';
+  const listParams = { sort: mode.sort, dir: mode.desc ? 'desc' : 'asc', known_swarm: 1, limit: PAGE_SIZE, offset: state.page * PAGE_SIZE, window: 30 };
   const [summary, data] = await Promise.all([
     api('/api/popularity'),
-    api(`/api/torrents?${query({ sort: mode.sort, dir: mode.desc ? 'desc' : 'asc', known_swarm: 1, limit: PAGE_SIZE, offset: state.page * PAGE_SIZE, window: 30 })}`),
+    api(`${byContent ? '/api/contents' : '/api/torrents'}?${query(listParams)}`),
   ]);
   const trackerRows = summary.trackers.filter((row) => row.popularity > 0);
+  const columns = byContent
+    ? [
+      { key: 'name', label: 'Contenu', className: 'name', render: contentLink },
+      { key: 'trackers', label: 'Trackers', render: (row) => tags(row.trackers) },
+      { key: 'popularity', label: 'Popularité', num: true, format: popularityText },
+      { key: 'seeders', label: 'Seeders', num: true, format: swarm },
+      { key: 'leechers', label: 'Leechers', num: true, format: swarm },
+      { key: 'efficiency', label: 'Envoyé / taille', num: true, format: times },
+    ]
+    : [
+      { key: 'name', label: 'Torrent', className: 'name', render: torrentLink },
+      { key: 'tracker', label: 'Tracker', className: 'nowrap', format: trackerName },
+      { key: 'popularity', label: 'Popularité', num: true, format: popularityText },
+      { key: 'seeders', label: 'Seeders', num: true, render: (row) => swarm(row.num_complete) },
+      { key: 'leechers', label: 'Leechers', num: true, render: (row) => swarm(row.num_incomplete) },
+      { key: 'ratio', label: 'Ratio', num: true, format: ratioText },
+    ];
   return [
     h('div', { class: 'stat-row' },
-      tile('Popularité moyenne', popularityText(summary.popularity), h('span', { class: 'delta', text: 'Ratio par mois actif' })),
+      tile('Popularité moyenne', popularityText(summary.popularity), h('span', { class: 'delta', text: 'Ratio par mois actif, par torrent' })),
       tile('Torrents demandés', summary.wanted.toLocaleString('fr-FR'), h('span', { class: 'delta', text: 'Au moins un leecher annoncé' })),
       tile('Leechers annoncés', summary.leechers.toLocaleString('fr-FR')),
       tile('Torrents presque sans seeder', summary.lonely.toLocaleString('fr-FR'), h('span', { class: 'delta', text: 'Un seeder annoncé au plus' }))),
@@ -500,18 +695,13 @@ async function popularityPage() {
         () => summary.trackers,
       )),
     h('div', { class: 'filters' },
+      scopeFilter(state.scope, (value) => { state.scope = value; state.page = 0; render(); }),
       segmented('Classement', Object.entries(POPULARITY_MODES).map(([value, item]) => [value, item.label]), state.mode, (value) => {
         state.mode = value; state.page = 0; render();
       }),
       h('span', { class: 'subtle', text: mode.note })),
     h('section', { class: 'card' },
-      dataTable([
-        { key: 'name', label: 'Torrent', className: 'name', render: torrentLink },
-        { key: 'tracker', label: 'Tracker', className: 'nowrap', format: trackerName },
-        { key: 'popularity', label: 'Popularité', num: true, format: popularityText },
-        { key: 'seeders', label: 'Seeders', num: true, render: (row) => swarm(row.num_complete) },
-        { key: 'leechers', label: 'Leechers', num: true, render: (row) => swarm(row.num_incomplete) },
-        { key: 'ratio', label: 'Ratio', num: true, format: ratioText },
+      dataTable([...columns,
         { key: 'up_period', label: 'Sur 30 j', num: true, format: bytes },
         { key: 'spark', label: '30 jours', render: (row) => sparkline(row.spark) },
       ], data.rows),
@@ -599,7 +789,7 @@ async function profitability() {
       })),
     h('section', { class: 'card' },
       dataTable([
-        { key: 'name', label: 'Contenu', sortable: true, className: 'name', render: torrentLink },
+        { key: 'name', label: 'Contenu', sortable: true, className: 'name', render: contentLink },
         { key: 'trackers', label: 'Trackers', render: (row) => tags(row.trackers) },
         { key: 'torrents', label: 'Torrents', sortable: true, num: true },
         { key: 'size', label: 'Taille', sortable: true, num: true, format: bytes },
@@ -673,6 +863,8 @@ function currentRoute() {
 async function pageFor(route) {
   if (route === '/') return overview();
   if (route === '/activite') return activity();
+  if (route === '/contenus') return contentsPage();
+  if (route.startsWith('/contenu/')) return contentDetail(decodeURIComponent(route.slice('/contenu/'.length)));
   if (route === '/torrents') return torrentsPage();
   if (route === '/popularite') return popularityPage();
   if (route === '/parametres') return settingsPage();
@@ -688,7 +880,7 @@ async function render({ focus = false } = {}) {
   hideTip();
   for (const link of document.querySelectorAll('#nav a')) {
     const target = link.getAttribute('href').slice(1);
-    const active = target === route || (target === '/torrents' && route.startsWith('/torrent/'));
+    const active = target === route || (target === '/torrents' && route.startsWith('/torrent/')) || (target === '/contenus' && route.startsWith('/contenu/'));
     if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
   }
   view.classList.add('loading');
@@ -728,6 +920,45 @@ async function refreshStatus() {
   }
 }
 
+function initRefresh() {
+  const button = document.getElementById('refresh');
+  const status = document.getElementById('status');
+  const say = (icon, text, ok) => {
+    status.className = `status ${ok ? 'ok' : 'error'}`;
+    status.replaceChildren(h('span', { class: 'icon', text: icon }), text);
+  };
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    button.textContent = 'Actualisation…';
+    try {
+      const response = await fetch('/api/collect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const body = await response.json();
+      if (response.status === 429) {
+        say('…', 'Collecte déjà demandée, patiente quelques secondes', true);
+        return;
+      }
+      if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+      // A full collection takes a moment: follow it, then redraw the page.
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        await new Promise((resolve) => { setTimeout(resolve, 1000); });
+        const summary = await api('/api/summary');
+        if (summary.last_full_success > body.previous_full_success) {
+          await render();
+          say('✓', 'Données actualisées à l’instant', true);
+          return;
+        }
+        if (summary.collector_error) throw new Error(summary.collector_error);
+      }
+      throw new Error('pas de réponse de la collecte après 30 secondes');
+    } catch (error) {
+      say('⚠', `Actualisation impossible : ${error.message}`, false);
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Actualiser';
+    }
+  });
+}
+
 function initTheme() {
   const button = document.getElementById('theme');
   const apply = (theme) => {
@@ -750,6 +981,7 @@ function initTheme() {
 
 document.getElementById('nav').append(...NAV.map(([path, text]) => h('a', { href: `#${path}`, text })));
 initTheme();
+initRefresh();
 window.addEventListener('hashchange', () => render({ focus: true }));
 document.addEventListener('scroll', hideTip, { passive: true });
 render();

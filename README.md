@@ -11,15 +11,18 @@ aucune dépendance Python, environ 20 Mio de RAM.
 - **Aperçu** : ratio global, débits, volume envoyé, upload cumulé et évolution du ratio, avec les totaux,
   le débit moyen et le pic de la période. Dix durées : 1 h, 6 h, 24 h, 3 j, 7 j, 30 j, 90 j, 6 mois, 1 an, tout.
 - **Activité** : torrents en cours de transfert, calendrier annuel de l'upload, heures les plus actives.
+- **Contenus** : statistiques par contenu, tous trackers confondus, avec recherche, filtres et mini-courbe.
+- **Page par contenu** : upload par tracker, envoyé / taille, popularité, seeders, leechers et liste de ses torrents.
 - **Torrents** : tableau triable et filtrable avec mini-courbe sur 30 jours, torrents supprimés inclus.
 - **Page par torrent** : courbes d'upload, de ratio, de popularité, de seeders et de leechers.
-- **Popularité** : torrents les plus populaires, les plus demandés et les moins seedés, moyenne par tracker.
+- **Popularité** : les plus populaires, les plus demandés et les moins seedés, par contenu ou par torrent.
 - **Trackers et catégories** : upload dans le temps, part de chacun, volume et ratio.
 - **Rentabilité** : upload rapporté à l'espace occupé, et poids morts à partir d'un seuil d'inactivité.
 - **Paramètres** : fréquences de collecte, modifiables sans redémarrage.
+- **Bouton Actualiser** : lance tout de suite une collecte complète.
 
-Les cross-seeds sont suivis séparément, par hash. Les vues de rentabilité les regroupent par contenu,
-car supprimer un seul d'entre eux ne libère aucun espace.
+Les cross-seeds sont suivis séparément, par hash, puis additionnés par contenu : supprimer un seul d'entre eux
+ne libère aucun espace, et c'est le contenu entier qui occupe le disque.
 
 SeedScope **lit** qBittorrent et ne modifie jamais rien : son client n'envoie aucune autre requête
 d'écriture que la connexion.
@@ -88,16 +91,17 @@ docker run --rm --network <reseau-de-prometheus> -v seedscope_seedscope-data:/da
 - **Courbes par torrent** : elles partent de la version 0.2. Une mesure est prise quand quelque chose change, et au
   moins une fois par heure. Les vues longues se contentent des mesures horaires, puis quotidiennes.
 - **Ratio** : c'est celui de qBittorrent. Il peut différer de celui affiché par les trackers.
-- **Volume seedé** : estimation haute. Les contenus sont regroupés par taille exacte, ce qui ne détecte pas un
-  épisode partageant ses fichiers avec un pack de saison.
+- **Contenus** : les torrents sont regroupés par taille exacte en octets, ce qui peut rarement réunir deux contenus
+  différents de même taille. Un épisode et le pack de saison qui le contient restent deux contenus, donc le volume
+  seedé est une estimation haute.
 - **Inactivité** : basée sur la dernière activité vue par qBittorrent. Un contenu n'est considéré inactif que si
   tous ses torrents le sont et qu'il est lui-même plus ancien que le seuil.
 - **Coupures** : l'upload transféré pendant un arrêt de SeedScope est compté à la reprise, sur l'heure en cours.
 
 ## Sécurité
 
-- L'interface n'a **pas d'authentification** : toute personne qui y accède voit les stats et peut changer les
-  fréquences de collecte. Publiez-la uniquement sur un réseau de confiance, jamais sur Internet.
+- L'interface n'a **pas d'authentification** : toute personne qui y accède voit les stats, peut changer les
+  fréquences de collecte et lancer une collecte (une toutes les 10 secondes au plus). Publiez-la uniquement sur un réseau de confiance, jamais sur Internet.
 - Seules des valeurs prédéfinies sont acceptées, et les requêtes venant d'un autre site sont refusées.
 - Les URL d'annonce contiennent votre passkey : seul le nom d'hôte du tracker est conservé.
 - Le conteneur est en lecture seule, sans capacité Linux, et les noms de torrents ne sont jamais interprétés comme

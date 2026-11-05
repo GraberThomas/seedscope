@@ -20,6 +20,7 @@ from seedscope import db  # noqa: E402
 from seedscope.collector import (  # noqa: E402
     Collector,
     GlobalSample,
+    content_key,
     LiveState,
     local_day,
     store_global_sample,
@@ -178,6 +179,7 @@ def main() -> None:
         {
             "hash": t["hash"],
             "name": t["name"],
+            "content_key": content_key(t["name"], t["size"]),
             "tracker": t["tracker"].split("/")[2],
             "up_speed": (8 - i) * 180_000,
             "dl_speed": 0,

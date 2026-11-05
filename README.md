@@ -40,14 +40,15 @@ par contenu. Il se contente de lire qBittorrent et n'y modifie jamais rien.
 | **Popularité** | Les plus populaires, les plus demandés et les moins seedés, par contenu ou par torrent ; moyenne par tracker |
 | **Trackers** | Upload dans le temps, part de chacun, volume et ratio, par tracker ou par catégorie |
 | **Rentabilité** | Upload rapporté à l'espace occupé, et poids morts selon un seuil d'inactivité. SeedScope suggère, mais ne supprime rien |
-| **Paramètres** | Fréquences de collecte, modifiables sans redémarrage |
+| **Paramètres** | Mode et palette de couleurs, durée affichée à l'ouverture, fréquences de collecte et conservation des données |
 
 Sur toutes les pages :
 
 - **Dix durées** : 1 h, 6 h, 24 h, 3 j, 7 j, 30 j, 90 j, 6 mois, 1 an ou tout l'historique.
 - **Courbes à la carte** : un clic sur la légende masque l'envoi, la réception ou un tracker, et l'échelle s'adapte.
 - **Bouton Actualiser** : lance tout de suite une collecte complète.
-- **Thème clair ou sombre**, interface adaptée au mobile, navigation au clavier, et un tableau pour chaque graphique.
+- **Quatre palettes de couleurs** en mode clair, sombre ou système, vérifiées pour le contraste et le daltonisme.
+- **Interface adaptée au mobile**, navigation au clavier, et un tableau pour chaque graphique.
 
 ## Captures
 
@@ -102,6 +103,14 @@ Elles se règlent dans la page **Paramètres** et s'appliquent immédiatement.
 | Stats globales et transferts en cours | 1 min | 30 s, 1, 2 ou 5 min |
 | Détail par torrent | 5 min | 1, 5, 10, 15, 30 min ou 1 h |
 
+### Conservation des données
+
+**Par défaut, SeedScope ne supprime rien.** Chaque type de données fines peut être limité dans la page **Paramètres**, de
+30 jours à 5 ans. Une limite plus courte ne s'applique qu'après une confirmation qui annonce le nombre de mesures à
+supprimer. Ensuite, ce qui dépasse la durée choisie est supprimé au fil de l'eau, et cette suppression est définitive.
+
+Les agrégats par heure et par jour, ainsi qu'une mesure par jour et par torrent, sont toujours conservés.
+
 ### Options avancées
 
 Ces variables ne sont pas transmises par `compose.yaml` : ajoutez-les à sa section `environment` pour les modifier.
@@ -110,10 +119,6 @@ Ces variables ne sont pas transmises par `compose.yaml` : ajoutez-les à sa sect
 |---|---|---|
 | `SEEDSCOPE_GLOBAL_INTERVAL` | Fréquence globale en secondes, tant que la page Paramètres n'a rien enregistré | `60` |
 | `SEEDSCOPE_TORRENT_INTERVAL` | Fréquence par torrent en secondes, tant que la page Paramètres n'a rien enregistré | `300` |
-| `SEEDSCOPE_MINUTE_RETENTION_DAYS` | Conservation des stats globales à la minute | `90` |
-| `SEEDSCOPE_HOURLY_RETENTION_DAYS` | Conservation de l'upload horaire par torrent | `365` |
-| `SEEDSCOPE_SAMPLE_FINE_RETENTION_DAYS` | Courbes par torrent, mesures fines | `30` |
-| `SEEDSCOPE_SAMPLE_HOURLY_RETENTION_DAYS` | Courbes par torrent, mesures horaires | `180` |
 
 ## Sauvegarde et mise à jour
 
@@ -184,7 +189,8 @@ docker run --rm --network <reseau-de-prometheus> -v seedscope_seedscope-data:/da
 | `GET /api/live` | Transferts en cours |
 | `GET /api/breakdown?by=tracker&range=30d` | Répartition par tracker ou par catégorie |
 | `GET /api/popularity`, `/api/calendar`, `/api/heatmap`, `/api/filters` | Vues spécialisées |
-| `GET` ou `POST /api/settings` | Lire ou modifier les fréquences de collecte |
+| `GET` ou `POST /api/settings` | Lire les réglages, modifier les fréquences de collecte |
+| `POST /api/settings/retention` | Modifier la conservation : répond `409` tant que `confirm_delete` n'est pas à `true` si une durée raccourcit |
 | `POST /api/collect` | Demander une collecte immédiate |
 | `GET /healthz` | État du service |
 
@@ -209,8 +215,8 @@ docker run --rm --network <reseau-de-prometheus> -v seedscope_seedscope-data:/da
 
 > [!WARNING]
 > L'interface n'a **pas d'authentification**. Toute personne qui y accède voit les stats et les noms de torrents, peut
-> changer les fréquences de collecte et lancer une collecte. Publiez-la uniquement sur un réseau de confiance, jamais sur
-> Internet.
+> changer les réglages, **y compris confirmer la suppression d'un historique**, et lancer une collecte. Publiez-la
+> uniquement sur un réseau de confiance, jamais sur Internet.
 
 - **qBittorrent** : le client n'envoie aucune autre requête d'écriture que la connexion.
 - **Passkeys** : les URL d'annonce en contiennent une, donc seul le nom d'hôte du tracker est conservé.
@@ -243,16 +249,14 @@ flowchart LR
 | `seedscope/static/` | Interface, sans framework ni dépendance |
 | `seedscope/backfill.py` | Import unique depuis Prometheus |
 
-Les données anciennes sont allégées pour que la base reste petite :
-
 | Table | Contenu | Conservation |
 |---|---|---|
-| `global_minute` | Débits et compteurs globaux | 90 jours |
-| `global_hourly` | Agrégats globaux par heure | Illimitée |
-| `torrent_hourly` | Upload et download par torrent et par heure | 1 an |
-| `torrent_daily` | Upload et download par torrent et par jour | Illimitée |
-| `torrent_samples` | Upload, ratio, popularité et pairs par torrent | Mesures fines 30 jours, horaires 6 mois, puis une par jour |
-| `torrents` | Dernier état de chaque torrent, supprimés inclus | Illimitée |
+| `global_minute` | Débits et compteurs globaux | Illimitée par défaut, réglable |
+| `global_hourly` | Agrégats globaux par heure | Toujours gardée |
+| `torrent_hourly` | Upload et download par torrent et par heure | Illimitée par défaut, réglable |
+| `torrent_daily` | Upload et download par torrent et par jour | Toujours gardée |
+| `torrent_samples` | Upload, ratio, popularité et pairs par torrent | Mesures fines et horaires illimitées par défaut, réglables ; une par jour toujours gardée |
+| `torrents` | Dernier état de chaque torrent, supprimés inclus | Toujours gardée |
 
 Une mesure par torrent n'est enregistrée que si une valeur a changé, et au moins une fois par heure.
 

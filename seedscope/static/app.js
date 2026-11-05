@@ -11,8 +11,33 @@ const UP = 'var(--series-1)';
 const DOWN = 'var(--series-2)';
 const SLOT_COLORS = ['var(--series-1)', 'var(--series-2)', 'var(--series-3)', 'var(--series-4)', 'var(--series-5)', 'var(--series-6)', 'var(--series-7)', 'var(--others)'];
 
+const DEFAULT_RANGE_KEY = 'seedscope-default-range';
+const PALETTE_KEY = 'seedscope-palette';
+const THEME_KEY = 'seedscope-theme';
+function stored(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+function store(key, value) {
+  try {
+    if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value);
+  } catch { /* storage unavailable: the choice lasts until the page is reloaded */ }
+}
+const savedRange = stored(DEFAULT_RANGE_KEY);
+const PALETTES = [
+  { id: 'bleu', label: 'Bleu', colors: ['#2a78d6', '#eb6834', '#1baf7a'] },
+  { id: 'foret', label: 'Forêt', colors: ['#008300', '#e87ba4', '#eda100'] },
+  { id: 'violet', label: 'Violet', colors: ['#6250d6', '#eb6834', '#1baf7a'] },
+  { id: 'rose', label: 'Rose', colors: ['#e87ba4', '#008300', '#2a78d6'] },
+];
+const RETENTION_LABELS = {
+  minute: ['Stats globales à la minute', 'Débits et totaux, utilisés par les courbes globales courtes.'],
+  torrent_hourly: ['Upload horaire par torrent', 'Barres par heure sur les vues par torrent, contenu et tracker.'],
+  sample_fine: ['Courbes par torrent, mesures fines', 'Une mesure à chaque changement.'],
+  sample_hourly: ['Courbes par torrent, mesures horaires', 'Une mesure par heure, pour les courbes de 1 à 6 mois.'],
+};
+
 const ui = {
-  range: '7d',
+  range: RANGES.some(([value]) => value === savedRange) ? savedRange : '7d',
   breakdownBy: 'tracker',
   deadDays: 30,
   contentMode: 'dead',
@@ -846,8 +871,45 @@ function intervalName(seconds) {
   return `${seconds / 60} minutes`;
 }
 
-async function settingsPage() {
-  const current = await api('/api/settings');
+function retentionName(days) {
+  if (days === 0) return 'Illimitée';
+  if (days >= 365) return `${days / 365} an${days >= 730 ? 's' : ''}`;
+  return `${days} jours`;
+}
+
+function appearanceCard() {
+  const paletteNow = stored(PALETTE_KEY) || 'bleu';
+  return h('section', { class: 'card settings' },
+    h('div', { class: 'card-head' }, h('h2', { text: 'Apparence' }), h('span', { class: 'subtle', text: 'Enregistrée dans ce navigateur' })),
+    h('div', { class: 'setting' },
+      h('span', { class: 'field', text: 'Mode' }),
+      segmented('Mode d’affichage', [['system', 'Système'], ['light', 'Clair'], ['dark', 'Sombre']], stored(THEME_KEY) || 'system', (value) => {
+        setThemeMode(value);
+        render();
+      })),
+    h('div', { class: 'setting' },
+      h('span', { class: 'field', text: 'Couleurs' }),
+      h('div', { class: 'palette-choices', role: 'group', 'aria-label': 'Palette de couleurs' }, PALETTES.map((palette) => h('button', {
+        type: 'button',
+        'aria-pressed': String(palette.id === paletteNow),
+        onclick: () => { setPalette(palette.id); render(); },
+      },
+      h('span', { class: 'palette-dots', 'aria-hidden': 'true' }, palette.colors.map((color) => {
+        const dot = h('span');
+        dot.style.background = color;
+        return dot;
+      })),
+      palette.label))),
+      h('p', { class: 'subtle', text: 'Chaque palette a été vérifiée pour le contraste et le daltonisme. Forêt sépare le mieux ses couleurs ; Rose est la moins contrastée en mode clair.' })),
+    h('div', { class: 'setting' },
+      select('Durée affichée à l’ouverture', RANGES, stored(DEFAULT_RANGE_KEY) || '7d', (value) => {
+        store(DEFAULT_RANGE_KEY, value);
+        ui.range = value;
+      }),
+      h('p', { class: 'subtle', text: 'Pour l’aperçu, les trackers et les pages de contenu ou de torrent.' })));
+}
+
+function intervalsCard(current) {
   const options = (values) => values.map((value) => [String(value), intervalName(value)]);
   let globalInterval = current.global_interval;
   let torrentInterval = current.torrent_interval;
@@ -867,20 +929,79 @@ async function settingsPage() {
       message.textContent = `⚠ Échec : ${error.message}`;
     }
   };
+  return h('section', { class: 'card settings' },
+    h('div', { class: 'card-head' }, h('h2', { text: 'Fréquence de collecte' })),
+    h('div', { class: 'setting' },
+      select('Stats globales', options(current.global_options), String(globalInterval), (value) => { globalInterval = Number(value); }),
+      h('p', { class: 'subtle', text: 'Débits, totaux envoyés et reçus, torrents en cours de transfert.' })),
+    h('div', { class: 'setting' },
+      select('Détail par torrent', options(current.torrent_options), String(torrentInterval), (value) => { torrentInterval = Number(value); }),
+      h('p', { class: 'subtle', text: 'Upload, ratio, popularité, seeders et leechers de chaque torrent. Ne peut pas être plus fréquent que les stats globales.' })),
+    h('p', { class: 'note', text: 'Une collecte plus fréquente donne des courbes plus fines, mais la base grossit plus vite et qBittorrent est davantage sollicité.' }),
+    h('div', { class: 'filters' },
+      h('button', { class: 'ghost', type: 'button', text: 'Enregistrer', onclick: save }),
+      message));
+}
+
+function retentionCard(current) {
+  const chosen = { ...current.retention };
+  const options = current.retention_options.map((days) => [String(days), retentionName(days)]);
+  const message = h('span', { class: 'subtle', role: 'status' });
+  const confirmBox = h('div');
+  const post = (confirmDelete) => fetch('/api/settings/retention', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...chosen, confirm_delete: confirmDelete }),
+  });
+  const done = () => { render(); };
+  const save = async () => {
+    message.textContent = '';
+    confirmBox.replaceChildren();
+    try {
+      const response = await post(false);
+      const body = await response.json();
+      if (response.status === 409) {
+        const lines = Object.entries(body.deletes).map(([name, count]) => h('li', {
+          text: `${RETENTION_LABELS[name][0]} : ${count.toLocaleString('fr-FR')} mesures supprimées maintenant, puis tout ce qui dépassera ${retentionName(chosen[name])}.`,
+        }));
+        confirmBox.replaceChildren(h('div', { class: 'confirm', role: 'alert' },
+          h('strong', { text: '⚠ Cette suppression est définitive' }),
+          h('ul', {}, lines),
+          h('p', { text: 'Les courbes de ces périodes seront moins détaillées ou vides. Pense à faire une sauvegarde avant si tu veux pouvoir revenir en arrière.' }),
+          h('div', { class: 'filters' },
+            h('button', { class: 'ghost danger', type: 'button', text: 'Je confirme, supprimer', onclick: async () => {
+              const confirmed = await post(true);
+              if (confirmed.ok) done();
+              else message.textContent = '⚠ Échec de l’enregistrement.';
+            } }),
+            h('button', { class: 'ghost', type: 'button', text: 'Annuler, ne rien supprimer', onclick: () => { confirmBox.replaceChildren(); message.textContent = 'Rien n’a été modifié.'; } }))));
+        return;
+      }
+      if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+      done();
+    } catch (error) {
+      message.textContent = `⚠ Échec : ${error.message}`;
+    }
+  };
+  return h('section', { class: 'card settings' },
+    h('div', { class: 'card-head' }, h('h2', { text: 'Conservation des données' }), h('span', { class: 'subtle', text: `Base actuelle : ${bytes(current.storage.bytes)}` })),
+    h('p', { class: 'note', text: 'Par défaut, rien n’est jamais supprimé. Une durée limitée ne s’applique qu’après ta confirmation. Les agrégats par heure et par jour, ainsi qu’une mesure par jour et par torrent, sont toujours gardés.' }),
+    Object.entries(RETENTION_LABELS).map(([name, [label, help]]) => h('div', { class: 'setting' },
+      select(label, options, String(chosen[name]), (value) => { chosen[name] = Number(value); }),
+      h('p', { class: 'subtle', text: `${help} ${current.storage.rows[name].toLocaleString('fr-FR')} mesures stockées.` }))),
+    h('div', { class: 'filters' },
+      h('button', { class: 'ghost', type: 'button', text: 'Enregistrer la conservation', onclick: save }),
+      message),
+    confirmBox);
+}
+
+async function settingsPage() {
+  const current = await api('/api/settings');
   return [
     h('h1', { text: 'Paramètres' }),
-    h('section', { class: 'card settings' },
-      h('div', { class: 'card-head' }, h('h2', { text: 'Fréquence de collecte' })),
-      h('div', { class: 'setting' },
-        select('Stats globales', options(current.global_options), String(globalInterval), (value) => { globalInterval = Number(value); }),
-        h('p', { class: 'subtle', text: 'Débits, totaux envoyés et reçus, torrents en cours de transfert.' })),
-      h('div', { class: 'setting' },
-        select('Détail par torrent', options(current.torrent_options), String(torrentInterval), (value) => { torrentInterval = Number(value); }),
-        h('p', { class: 'subtle', text: 'Upload, ratio, popularité, seeders et leechers de chaque torrent. Ne peut pas être plus fréquent que les stats globales.' })),
-      h('p', { class: 'note', text: 'Une collecte plus fréquente donne des courbes plus fines, mais la base grossit plus vite et qBittorrent est davantage sollicité.' }),
-      h('div', { class: 'filters' },
-        h('button', { class: 'ghost', type: 'button', text: 'Enregistrer', onclick: save }),
-        message)),
+    appearanceCard(),
+    intervalsCard(current),
+    retentionCard(current),
   ];
 }
 
@@ -993,24 +1114,23 @@ function initRefresh() {
   });
 }
 
+function setThemeMode(mode) {
+  if (mode === 'system') delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = mode;
+  store(THEME_KEY, mode === 'system' ? null : mode);
+}
+
+function setPalette(id) {
+  if (id === 'bleu') delete document.documentElement.dataset.palette;
+  else document.documentElement.dataset.palette = id;
+  store(PALETTE_KEY, id === 'bleu' ? null : id);
+}
+
 function initTheme() {
-  const button = document.getElementById('theme');
-  const apply = (theme) => {
-    if (theme) document.documentElement.dataset.theme = theme;
-    else delete document.documentElement.dataset.theme;
-  };
-  const isDark = () => (document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')) === 'dark';
-  const label = () => { button.textContent = isDark() ? 'Thème clair' : 'Thème sombre'; };
-  let saved = null;
-  try { saved = localStorage.getItem('seedscope-theme'); } catch { /* storage unavailable */ }
-  apply(saved);
-  label();
-  button.addEventListener('click', () => {
-    const next = isDark() ? 'light' : 'dark';
-    apply(next);
-    label();
-    try { localStorage.setItem('seedscope-theme', next); } catch { /* storage unavailable */ }
-  });
+  const saved = stored(THEME_KEY);
+  if (saved) document.documentElement.dataset.theme = saved;
+  const palette = stored(PALETTE_KEY);
+  if (PALETTES.some((item) => item.id === palette)) setPalette(palette);
 }
 
 document.getElementById('nav').append(...NAV.map(([path, text]) => h('a', { href: `#${path}`, text })));

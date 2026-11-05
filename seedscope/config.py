@@ -46,10 +46,6 @@ class Config:
     port: int = 8080
     global_interval: int = 60
     torrent_interval: int = 300
-    minute_retention_days: int = 90
-    hourly_retention_days: int = 365
-    sample_fine_retention_days: int = 30
-    sample_hourly_retention_days: int = 180
     tracker_aliases: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -71,9 +67,5 @@ class Config:
             port=_positive_int(env, "SEEDSCOPE_PORT", 8080),
             global_interval=_positive_int(env, "SEEDSCOPE_GLOBAL_INTERVAL", 60),
             torrent_interval=_positive_int(env, "SEEDSCOPE_TORRENT_INTERVAL", 300),
-            minute_retention_days=_positive_int(env, "SEEDSCOPE_MINUTE_RETENTION_DAYS", 90),
-            hourly_retention_days=_positive_int(env, "SEEDSCOPE_HOURLY_RETENTION_DAYS", 365),
-            sample_fine_retention_days=_positive_int(env, "SEEDSCOPE_SAMPLE_FINE_RETENTION_DAYS", 30),
-            sample_hourly_retention_days=_positive_int(env, "SEEDSCOPE_SAMPLE_HOURLY_RETENTION_DAYS", 180),
             tracker_aliases=parse_aliases(env.get("SEEDSCOPE_TRACKER_ALIASES", "")),
         )

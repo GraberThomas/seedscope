@@ -748,16 +748,17 @@ def contents_summary(conn: sqlite3.Connection) -> dict[str, Any]:
 
 
 def top_contents(conn: sqlite3.Connection, range_key: str, now: int, limit: int = 10) -> dict[str, Any]:
-    """Contents that sent the most over a range, with hourly precision while it is kept."""
+    """Contents that sent the most over a range; hourly data only on short ranges, as its
+    retention can be limited to 30 days."""
     _check_range(range_key)
     seconds = RANGES[range_key]
-    if seconds is not None and seconds <= 365 * DAY:
+    if seconds is not None and seconds <= 30 * DAY:
         start = now - seconds
         source = "SELECT hash, SUM(up) AS up FROM torrent_hourly WHERE hour >= ? GROUP BY hash"
         value: Any = start - start % 3600
     else:
         source = "SELECT hash, SUM(up) AS up FROM torrent_daily WHERE day >= ? GROUP BY hash"
-        value = "0000-00-00"
+        value = local_day(now - seconds) if seconds else "0000-00-00"
     rows = conn.execute(
         f"""
         SELECT t.content_key AS content_key, MIN(t.name) AS name, MAX(t.size) AS size,

@@ -211,7 +211,24 @@ class CollectorTest(unittest.TestCase):
         current = self.conn.execute("SELECT popularity FROM torrents").fetchone()[0]
         self.assertEqual(current, 1.25)
 
+    def test_by_default_nothing_is_ever_deleted(self):
+        now = 5000 * 86400
+        self.conn.execute(
+            "INSERT INTO global_minute (ts, up_speed, dl_speed, alltime_ul, alltime_dl) VALUES (1, 0, 0, 0, 0)"
+        )
+        self.conn.execute("INSERT INTO torrent_hourly (hash, hour, up, dl) VALUES (?, 1, 1, 1)", (HASH_A,))
+        for tier in (0, 1, 2):
+            self.conn.execute(
+                "INSERT INTO torrent_samples VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0)", (HASH_A, tier + 1, tier)
+            )
+        self.conn.commit()
+        self.collector.prune(now)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM global_minute").fetchone()[0], 1)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM torrent_hourly").fetchone()[0], 1)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM torrent_samples").fetchone()[0], 3)
+
     def test_prune_thins_samples_by_tier(self):
+        settings.save_retention(self.conn, settings.Retention(sample_fine=30, sample_hourly=180))
         now = 1000 * 86400
         for age_days, tier in ((31, 0), (29, 0), (181, 1), (179, 1), (900, 2)):
             self.conn.execute(
@@ -273,6 +290,23 @@ class CollectorTest(unittest.TestCase):
         self.collector.run(stop)
         self.assertEqual(client.full_polls, 2)
 
+    def test_agreed_retention_applies_at_the_next_cycle(self):
+        now = 1000 * 86400
+        self.conn.execute(
+            "INSERT INTO global_minute (ts, up_speed, dl_speed, alltime_ul, alltime_dl) VALUES (?, 0, 0, 0, 0)",
+            (now - 100 * 86400,),
+        )
+        self.conn.commit()
+        self.client.state = {"alltime_ul": 1, "alltime_dl": 1}
+        self.collector.tick(now, include_torrents=False)  # prunes once, with no limit
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM global_minute").fetchone()[0], 2)
+        settings.save_retention(self.conn, settings.Retention(minute=90))
+        self.collector.state.request_prune()
+        self.collector.tick(now + 60, include_torrents=False)
+        oldest = self.conn.execute("SELECT MIN(ts) FROM global_minute").fetchone()[0]
+        self.assertEqual(oldest, now)
+        self.assertFalse(self.collector.state.force_prune)
+
     def test_live_rows_carry_their_content(self):
         self.client.active = [torrent(upspeed=5, dlspeed=7, eta=90, progress=0.5, num_seeds=3)]
         self.collector.poll_live(1000)
@@ -290,6 +324,7 @@ class CollectorTest(unittest.TestCase):
         }
         self.client.list = [torrent()]
         self.client.active = [torrent(upspeed=500), torrent(HASH_B, upspeed=900)]
+        settings.save_retention(self.conn, settings.Retention(minute=90, torrent_hourly=365))
         now = 400 * 86400
         self.conn.execute(
             "INSERT INTO global_minute (ts, up_speed, dl_speed, alltime_ul, alltime_dl) "

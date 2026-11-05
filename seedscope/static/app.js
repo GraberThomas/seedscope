@@ -263,7 +263,9 @@ async function overview() {
         h('div', { class: 'subtle', text: `${bytes(summary.alltime_ul)} envoyés pour ${bytes(summary.alltime_dl)} reçus` })),
       h('div', { class: 'tiles' },
         tile('Envoi en cours', speed(summary.up_speed)),
+        tile('Réception en cours', speed(summary.dl_speed)),
         tile('Envoyé aujourd’hui', bytes(summary.up_today)),
+        tile('Reçu aujourd’hui', bytes(summary.dl_today)),
         tile('Envoyé sur 7 jours', bytes(summary.up_7d), periodDelta(summary.up_7d, summary.up_7d_previous, 'aux 7 jours précédents')),
         tile('Envoyé sur 30 jours', bytes(summary.up_30d), periodDelta(summary.up_30d, summary.up_30d_previous, 'aux 30 jours précédents')),
         tile('Contenus', summary.contents.toLocaleString('fr-FR'), h('span', { class: 'delta', text: `${summary.torrents} torrents, ${summary.active} actifs` })),
@@ -907,6 +909,7 @@ async function refreshStatus() {
   const status = document.getElementById('status');
   try {
     const summary = await api('/api/summary');
+    document.getElementById('speeds').textContent = summary.last_sample ? `↑ ${speed(summary.up_speed)}  ↓ ${speed(summary.dl_speed)}` : '';
     const stale = !summary.last_sample || Date.now() / 1000 - summary.last_sample > Math.max(300, summary.global_interval * 3);
     const failed = Boolean(summary.collector_error) || stale;
     status.className = `status ${failed ? 'error' : 'ok'}`;
@@ -944,6 +947,7 @@ function initRefresh() {
         const summary = await api('/api/summary');
         if (summary.last_full_success > body.previous_full_success) {
           await render();
+          await refreshStatus();
           say('✓', 'Données actualisées à l’instant', true);
           return;
         }

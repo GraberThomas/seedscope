@@ -8,7 +8,7 @@ aucune dépendance Python, environ 20 Mio de RAM.
 
 ## Fonctionnalités
 
-- **Aperçu** : ratio global, débits, volume envoyé, upload cumulé et évolution du ratio, avec les totaux,
+- **Aperçu** : ratio global, envoi et réception en cours (aussi en haut de chaque page), débits, volume envoyé, upload cumulé et évolution du ratio, avec les totaux,
   le débit moyen et le pic de la période. Dix durées : 1 h, 6 h, 24 h, 3 j, 7 j, 30 j, 90 j, 6 mois, 1 an, tout.
 - **Courbes à plusieurs séries** : un clic sur la légende masque ou réaffiche l'envoi, la réception ou un tracker,
   et l'échelle s'adapte. Ce choix est mémorisé dans le navigateur.

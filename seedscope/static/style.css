@@ -134,6 +134,7 @@ nav a {
 nav a:hover { background: var(--wash); }
 nav a[aria-current="page"] { color: var(--ink); background: var(--wash); font-weight: 600; }
 .topbar-end { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+.speeds { color: var(--ink); font-size: 12px; font-variant-numeric: tabular-nums; white-space: pre; }
 .status { color: var(--ink-2); font-size: 12px; }
 .status .icon { font-weight: 700; margin-right: 4px; }
 .status.ok .icon { color: var(--good); }
@@ -163,7 +164,7 @@ main.loading { opacity: 0.6; }
 .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(460px, 100%), 1fr)); gap: 16px; }
 
 .hero-row { display: grid; grid-template-columns: minmax(220px, 280px) minmax(0, 1fr); gap: 16px; }
-.hero-row .tiles { grid-template-columns: repeat(auto-fit, minmax(max(165px, 30%), 1fr)); }
+.hero-row .tiles { grid-template-columns: repeat(auto-fit, minmax(max(165px, 22%), 1fr)); }
 .hero .label, .tile .label { color: var(--ink-2); font-size: 13px; }
 .hero .value { font-size: 56px; font-weight: 600; line-height: 1.1; margin: 6px 0; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 12px; }

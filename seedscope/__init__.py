@@ -1,3 +1,3 @@
 """SeedScope: long-term statistics for qBittorrent."""
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"

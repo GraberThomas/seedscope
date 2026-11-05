@@ -6,6 +6,7 @@ import json
 import logging
 import sqlite3
 import time
+from dataclasses import asdict
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -146,6 +147,9 @@ def make_handler(
             "torrent_interval": current.torrent_interval,
             "global_options": settings.GLOBAL_OPTIONS,
             "torrent_options": settings.TORRENT_OPTIONS,
+            "retention": asdict(settings.load_retention(conn)),
+            "retention_options": settings.RETENTION_OPTIONS,
+            "storage": settings.storage(conn, config.db_path),
         }
 
     routes: dict[str, Callable[[sqlite3.Connection, Params, int], Any]] = {
@@ -246,7 +250,7 @@ def make_handler(
 
         def do_POST(self) -> None:  # noqa: N802
             path = urlsplit(self.path).path
-            if path not in ("/api/settings", "/api/collect"):
+            if path not in ("/api/settings", "/api/settings/retention", "/api/collect"):
                 self._json({"error": "Methode non autorisee"}, HTTPStatus.METHOD_NOT_ALLOWED)
                 return
             try:
@@ -255,6 +259,8 @@ def make_handler(
                     return
                 if path == "/api/settings":
                     self._save_settings(body)
+                elif path == "/api/settings/retention":
+                    self._save_retention(body)
                 else:
                     self._request_collection()
             except settings.InvalidSetting as exc:
@@ -308,6 +314,29 @@ def make_handler(
                     "torrent_interval": intervals.torrent_interval,
                 }
             )
+
+        def _save_retention(self, body: dict[str, Any]) -> None:
+            new = settings.validate_retention(body)
+            conn = db.connect(config.db_path)
+            try:
+                current = settings.load_retention(conn)
+                names = settings.tightened(current, new)
+                # Deleting history needs an explicit agreement: only a literal true counts.
+                if names and body.get("confirm_delete") is not True:
+                    self._json(
+                        {
+                            "requires_confirmation": True,
+                            "deletes": settings.count_expired(conn, new, names, int(clock())),
+                        },
+                        HTTPStatus.CONFLICT,
+                    )
+                    return
+                settings.save_retention(conn, new)
+            finally:
+                conn.close()
+            if names:
+                state.request_prune()
+            self._json({"retention": asdict(new)})
 
         def _request_collection(self) -> None:
             previous = state.snapshot()["last_full_success"]

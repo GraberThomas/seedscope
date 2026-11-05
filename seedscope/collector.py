@@ -77,6 +77,7 @@ class LiveState:
     force_full: bool = False  # a manual refresh asked for a complete collection
     last_full_success: int = 0
     last_manual_request: float = 0.0
+    force_prune: bool = False  # the user just agreed to a shorter retention
 
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
@@ -98,6 +99,17 @@ class LiveState:
             self.force_full = True
         self.wake.set()
         return True
+
+    def request_prune(self) -> None:
+        with self.lock:
+            self.force_prune = True
+        self.wake.set()
+
+    def take_force_prune(self) -> bool:
+        with self.lock:
+            forced = self.force_prune
+            self.force_prune = False
+            return forced
 
     def take_force_full(self) -> bool:
         with self.lock:
@@ -380,19 +392,8 @@ class Collector:
         db.set_meta(self.conn, "last_torrent_poll", now)
 
     def prune(self, now: int) -> None:
-        minute_limit = now - self.config.minute_retention_days * 86400
-        hourly_limit = now - self.config.hourly_retention_days * 86400
-        with self.conn:
-            self.conn.execute("DELETE FROM global_minute WHERE ts < ?", (minute_limit,))
-            self.conn.execute("DELETE FROM torrent_hourly WHERE hour < ?", (hourly_limit,))
-            self.conn.execute(
-                "DELETE FROM torrent_samples WHERE tier = 0 AND ts < ?",
-                (now - self.config.sample_fine_retention_days * 86400,),
-            )
-            self.conn.execute(
-                "DELETE FROM torrent_samples WHERE tier = 1 AND ts < ?",
-                (now - self.config.sample_hourly_retention_days * 86400,),
-            )
+        """Delete only what the retention chosen by the user allows: nothing by default."""
+        settings.delete_expired(self.conn, settings.load_retention(self.conn), now)
         self._last_prune = now
 
     def tick(self, now: int, include_torrents: bool) -> None:
@@ -400,7 +401,7 @@ class Collector:
         self.poll_live(now)
         if include_torrents:
             self.poll_torrents(now)
-        if now - self._last_prune >= PRUNE_INTERVAL:
+        if self.state.take_force_prune() or now - self._last_prune >= PRUNE_INTERVAL:
             self.prune(now)
         with self.state.lock:
             self.state.last_success = now

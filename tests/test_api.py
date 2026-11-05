@@ -202,6 +202,7 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(top[0]["up_period"], 3 * GIB)
         self.assertEqual(top[0]["torrents"], 2)
         self.assertEqual(self.get("/api/contents/top?range=all")["rows"][0]["up_period"], 3 * GIB)
+        self.assertEqual(self.get("/api/contents/top?range=90d")["rows"][0]["up_period"], 3 * GIB)
         self.assertEqual(self.status("/api/contents/top?range=x"), 400)
 
     def test_content_detail_adds_up_its_torrents(self):
@@ -316,6 +317,7 @@ class SettingsApiTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         path = str(Path(self.tmp.name) / "s.db")
+        self.path = path
         db.connect(path).close()
         config = Config("http://qbit", "u", "p", db_path=path, host="127.0.0.1", port=0)
         self.state = LiveState()
@@ -347,6 +349,76 @@ class SettingsApiTest(unittest.TestCase):
         self.assertEqual(self.post(valid), 200)
         self.assertTrue(self.state.wake.is_set())
         self.assertEqual(self.current()["torrent_interval"], 600)
+
+    def post_retention(self, payload, origin=None):
+        headers = {"Content-Type": "application/json"}
+        if origin:
+            headers["Origin"] = origin
+        request = urllib.request.Request(
+            self.base + "/api/settings/retention", data=json.dumps(payload).encode(), headers=headers
+        )
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status, json.load(response)
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.load(exc)
+
+    UNLIMITED = {"minute": 0, "torrent_hourly": 0, "sample_fine": 0, "sample_hourly": 0}
+
+    def test_retention_is_unlimited_by_default_and_reports_storage(self):
+        current = self.current()
+        self.assertEqual(current["retention"], self.UNLIMITED)
+        self.assertIn(0, current["retention_options"])
+        self.assertGreater(current["storage"]["bytes"], 0)
+        self.assertEqual(current["storage"]["rows"]["minute"], 0)
+
+    def test_shorter_retention_needs_a_literal_confirmation(self):
+        with self.conn_write() as conn:
+            conn.execute(
+                "INSERT INTO global_minute (ts, up_speed, dl_speed, alltime_ul, alltime_dl) VALUES (1, 0, 0, 0, 0)"
+            )
+        shorter = {**self.UNLIMITED, "minute": 90}
+        for attempt in (shorter, {**shorter, "confirm_delete": False}, {**shorter, "confirm_delete": "true"}, {**shorter, "confirm_delete": 1}):
+            status, body = self.post_retention(attempt)
+            self.assertEqual(status, 409, attempt)
+            self.assertEqual(body["deletes"], {"minute": 1})
+        self.assertEqual(self.current()["retention"], self.UNLIMITED)
+        self.assertFalse(self.state.force_prune)
+        status, _ = self.post_retention({**shorter, "confirm_delete": True})
+        self.assertEqual(status, 200)
+        self.assertEqual(self.current()["retention"]["minute"], 90)
+        self.assertTrue(self.state.force_prune)
+
+    def test_longer_retention_needs_no_confirmation(self):
+        self.post_retention({**self.UNLIMITED, "minute": 90, "confirm_delete": True})
+        self.state.force_prune = False
+        self.assertEqual(self.post_retention({**self.UNLIMITED, "minute": 365})[0], 200)
+        self.assertEqual(self.post_retention(self.UNLIMITED)[0], 200)
+        self.assertFalse(self.state.force_prune)
+
+    def test_retention_rejects_bad_values_and_other_sites(self):
+        for value in (1, "90", True, None):
+            status, _ = self.post_retention({**self.UNLIMITED, "minute": value, "confirm_delete": True})
+            self.assertEqual(status, 400, value)
+        status, _ = self.post_retention(
+            {**self.UNLIMITED, "minute": 90, "confirm_delete": True}, origin="https://evil.example"
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(self.current()["retention"], self.UNLIMITED)
+
+    def conn_write(self):
+        import contextlib
+
+        @contextlib.contextmanager
+        def opened():
+            conn = db.connect(self.path)
+            try:
+                with conn:
+                    yield conn
+            finally:
+                conn.close()
+
+        return opened()
 
     def collect(self, content_type="application/json"):
         request = urllib.request.Request(

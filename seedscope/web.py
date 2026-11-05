@@ -81,7 +81,7 @@ def make_handler(
 
     def api_live(conn: sqlite3.Connection, params: Params, now: int) -> Any:
         snapshot = state.snapshot()
-        return {"ts": snapshot["active_ts"], "rows": snapshot["active"][:50]}
+        return {"ts": snapshot["active_ts"], "rows": snapshot["active"][:500]}
 
     def api_torrents(conn: sqlite3.Connection, params: Params, now: int) -> Any:
         return queries.list_torrents(

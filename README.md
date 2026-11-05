@@ -12,7 +12,7 @@ aucune dépendance Python, environ 20 Mio de RAM.
   le débit moyen et le pic de la période. Dix durées : 1 h, 6 h, 24 h, 3 j, 7 j, 30 j, 90 j, 6 mois, 1 an, tout.
 - **Courbes à plusieurs séries** : un clic sur la légende masque ou réaffiche l'envoi, la réception ou un tracker,
   et l'échelle s'adapte. Ce choix est mémorisé dans le navigateur.
-- **Activité** : torrents en cours de transfert, calendrier annuel de l'upload, heures les plus actives.
+- **Activité** : transferts en cours, filtrés par sens (envoi ou réception), avec progression et temps restant, calendrier annuel de l'upload, heures les plus actives.
 - **Contenus** : statistiques par contenu, tous trackers confondus, avec recherche, filtres et mini-courbe.
 - **Page par contenu** : upload par tracker, envoyé / taille, popularité, seeders, leechers et liste de ses torrents.
 - **Torrents** : tableau triable et filtrable avec mini-courbe sur 30 jours, torrents supprimés inclus.

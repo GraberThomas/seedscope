@@ -274,8 +274,10 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(client.full_polls, 2)
 
     def test_live_rows_carry_their_content(self):
-        self.client.active = [torrent(upspeed=5)]
+        self.client.active = [torrent(upspeed=5, dlspeed=7, eta=90, progress=0.5, num_seeds=3)]
         self.collector.poll_live(1000)
+        row = self.collector.state.snapshot()["active"][0]
+        self.assertEqual((row["dl_speed"], row["eta"], row["progress"], row["seeds"]), (7, 90, 0.5, 3))
         self.assertEqual(self.collector.state.snapshot()["active"][0]["content_key"], content_key("Demo.Movie.2024", 10 * GIB))
 
     def test_tick_collects_everything_and_prune_respects_retention(self):

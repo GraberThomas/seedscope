@@ -21,6 +21,7 @@ const ui = {
   contentWindow: 30,
   popularity: { mode: 'popularity', scope: 'content', page: 0 },
   liveScope: 'content',
+  liveDirection: 'all',
   contents: { sort: 'uploaded', desc: true, q: '', tracker: '', category: '', tag: '', window: 30, page: 0 },
   torrents: { sort: 'uploaded', desc: true, q: '', tracker: '', category: '', tag: '', status: 'active', window: 7, page: 0 },
 };
@@ -49,6 +50,9 @@ function bytesAxis(value) {
 const speedAxis = (value) => `${bytesAxis(value)}/s`;
 const popularityText = (value) => (value === null || value === undefined ? '–' : number(value, 3));
 const swarm = (value) => (value === null || value === undefined || value < 0 ? '–' : value.toLocaleString('fr-FR'));
+const percent = (value) => `${number((value || 0) * 100, 1)} %`;
+// qBittorrent answers 8640000 seconds when it cannot estimate the time left.
+const eta = (seconds) => (!seconds || seconds <= 0 || seconds >= 8640000 ? '∞' : duration(seconds));
 const windowName = (window) => WINDOWS.find(([value]) => value === window)[1];
 const ratioText = (value) => (value === null || value === undefined ? '–' : number(value));
 const times = (value) => `${number(value)} ×`;
@@ -320,38 +324,64 @@ async function overview() {
 
 async function activity() {
   const [live, cal, heat] = await Promise.all([api('/api/live'), api('/api/calendar'), api('/api/heatmap')]);
-  const uploading = live.rows.filter((row) => row.up_speed > 0 || row.dl_speed > 0);
+  const uploading = live.rows.filter((row) => row.up_speed > 0);
+  const downloading = live.rows.filter((row) => row.dl_speed > 0);
+  const transferring = live.rows.filter((row) => row.up_speed > 0 || row.dl_speed > 0);
+  const direction = ui.liveDirection;
+  const selected = { all: transferring, up: uploading, down: downloading }[direction];
   const groups = new Map();
-  for (const row of uploading) {
-    const group = groups.get(row.content_key) || { content_key: row.content_key, name: row.name, up_speed: 0, dl_speed: 0, leechers: 0, torrents: 0, trackers: new Set() };
+  for (const row of selected) {
+    const group = groups.get(row.content_key) || { content_key: row.content_key, name: row.name, up_speed: 0, dl_speed: 0, leechers: 0, seeds: 0, torrents: 0, progress: 0, eta: 0, trackers: new Set() };
     group.up_speed += row.up_speed;
     group.dl_speed += row.dl_speed;
     group.leechers += row.leechers;
+    group.seeds += row.seeds;
     group.torrents += 1;
+    group.progress = Math.max(group.progress, row.progress);
+    if (row.dl_speed > 0 && row.eta > 0 && (group.eta === 0 || row.eta < group.eta)) group.eta = row.eta;
     group.trackers.add(trackerName(row.tracker));
     groups.set(row.content_key, group);
   }
-  const contentRows = [...groups.values()].sort((a, b) => b.up_speed - a.up_speed);
-  const liveTable = ui.liveScope === 'content'
+  const bySpeed = (a, b) => (direction === 'down' ? b.dl_speed - a.dl_speed : b.up_speed - a.up_speed || b.dl_speed - a.dl_speed);
+  const byContent = ui.liveScope === 'content';
+  const speedColumns = {
+    all: [
+      { key: 'up_speed', label: 'Envoi', num: true, format: speed },
+      { key: 'dl_speed', label: 'Réception', num: true, format: speed },
+    ],
+    up: [
+      { key: 'up_speed', label: 'Envoi', num: true, format: speed },
+      { key: 'leechers', label: 'Leechers connectés', num: true },
+    ],
+    down: [
+      { key: 'dl_speed', label: 'Réception', num: true, format: speed },
+      { key: 'progress', label: 'Progression', num: true, format: percent },
+      { key: 'eta', label: 'Temps restant', num: true, format: eta },
+      { key: 'seeds', label: 'Seeders connectés', num: true },
+    ],
+  }[direction];
+  const noTransfer = { all: 'Aucun transfert en ce moment.', up: 'Aucun envoi en ce moment.', down: 'Aucune réception en ce moment.' }[direction];
+  const liveTable = byContent
     ? dataTable([
       { key: 'name', label: 'Contenu', className: 'name', render: contentLink },
       { key: 'trackers', label: 'Trackers', render: (row) => tags([...row.trackers].join(',')) },
-      { key: 'up_speed', label: 'Envoi', num: true, format: speed },
-      { key: 'dl_speed', label: 'Réception', num: true, format: speed },
-      { key: 'leechers', label: 'Pairs', num: true },
-    ], contentRows, { empty: 'Aucun transfert en ce moment.' })
+      ...speedColumns,
+    ], [...groups.values()].sort(bySpeed), { empty: noTransfer })
     : dataTable([
       { key: 'name', label: 'Torrent', className: 'name', render: torrentLink },
       { key: 'tracker', label: 'Tracker', className: 'nowrap', format: trackerName },
-      { key: 'up_speed', label: 'Envoi', num: true, format: speed },
-      { key: 'dl_speed', label: 'Réception', num: true, format: speed },
-      { key: 'leechers', label: 'Pairs', num: true },
+      ...speedColumns,
       { key: 'ratio', label: 'Ratio', num: true, format: ratioText },
-    ], uploading, { empty: 'Aucun transfert en ce moment.' });
-  const lookup = new Map(heat.cells.map((cell) => [`${cell.weekday}-${cell.hour}`, cell.up]));
+    ], [...selected].sort(bySpeed), { empty: noTransfer });
   return [
-    h('div', { class: 'filters' }, scopeFilter(ui.liveScope, (value) => { ui.liveScope = value; render(); })),
-    card('Top du moment', live.ts ? `Mis à jour ${ago(live.ts)}` : null, liveTable),
+    h('div', { class: 'filters' },
+      segmented('Sens du transfert', [
+        ['all', `Tous (${transferring.length})`],
+        ['up', `En envoi (${uploading.length})`],
+        ['down', `En réception (${downloading.length})`],
+      ], direction, (value) => { ui.liveDirection = value; render(); }),
+      scopeFilter(ui.liveScope, (value) => { ui.liveScope = value; render(); })),
+    card('Transferts en cours', live.ts ? `Mis à jour ${ago(live.ts)}` : null, liveTable),
     card('Upload par jour', '371 derniers jours',
       calendarChart({ ...cal, format: bytes, formatDay: dayLabel, empty: NO_DATA }),
       tableView(

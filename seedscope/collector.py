@@ -223,7 +223,10 @@ class Collector:
                     "dl_speed": int(t.get("dlspeed") or 0),
                     "ratio": float(t.get("ratio") or 0),
                     "leechers": int(t.get("num_leechs") or 0),
+                    "seeds": int(t.get("num_seeds") or 0),
                     "size": int(t.get("size") or 0),
+                    "progress": float(t.get("progress") or 0),
+                    "eta": int(t.get("eta") or 0),
                 }
                 for t in active
             ),

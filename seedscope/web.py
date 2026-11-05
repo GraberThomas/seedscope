@@ -1,0 +1,199 @@
+"""HTTP server: static interface and read-only JSON API."""
+
+from __future__ import annotations
+
+import json
+import logging
+import sqlite3
+import time
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any, Callable
+from urllib.parse import parse_qs, urlsplit
+
+from . import __version__, db, queries
+from .collector import LiveState
+from .config import Config
+
+log = logging.getLogger("seedscope.web")
+
+STATIC_DIR = Path(__file__).parent / "static"
+STATIC_FILES = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/charts.js": ("charts.js", "text/javascript; charset=utf-8"),
+    "/style.css": ("style.css", "text/css; charset=utf-8"),
+}
+SECURITY_HEADERS = {
+    "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; "
+    "connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; "
+    "frame-ancestors 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+}
+
+
+class Params:
+    def __init__(self, query: str) -> None:
+        self._values = parse_qs(query, keep_blank_values=True)
+
+    def text(self, name: str, default: str = "") -> str:
+        return self._values.get(name, [default])[0]
+
+    def optional(self, name: str) -> str | None:
+        values = self._values.get(name)
+        return values[0] if values else None
+
+    def integer(self, name: str, default: int, low: int, high: int) -> int:
+        raw = self.text(name, str(default))
+        try:
+            value = int(raw)
+        except ValueError:
+            raise queries.BadRequest(f"{name} doit etre un entier") from None
+        if not low <= value <= high:
+            raise queries.BadRequest(f"{name} hors limites")
+        return value
+
+    def descending(self) -> bool:
+        return self.text("dir", "desc") != "asc"
+
+
+def make_handler(
+    config: Config, state: LiveState, clock: Callable[[], float]
+) -> type[BaseHTTPRequestHandler]:
+    def api_summary(conn: sqlite3.Connection, params: Params, now: int) -> Any:
+        return queries.summary(conn, now, state.snapshot())
+
+    def api_timeseries(conn: sqlite3.Connection, params: Params, now: int) -> Any:
+        return queries.timeseries(conn, params.text("range", "7d"), now)
+
+    def api_calendar(conn: sqlite3.Connection, params: Params, now: int) -> Any:
+        return queries.calendar(conn, now)
+
+    def api_heatmap(conn: sqlite3.Connection, params: Params, now: int) -> Any:
+        return queries.heatmap(conn, now, params.integer("days", 90, 1, 3650))
+
+    def api_live(conn: sqlite3.Connection, params: Params, now: int) -> Any:
+        snapshot = state.snapshot()
+        return {"ts": snapshot["active_ts"], "rows": snapshot["active"][:50]}
+
+    def api_torrents(conn: sqlite3.Connection, params: Params, now: int) -> Any:
+        return queries.list_torrents(
+            conn,
+            now,
+            sort=params.text("sort", "uploaded"),
+            descending=params.descending(),
+            q=params.text("q")[:200],
+            tracker=params.optional("tracker"),
+            category=params.optional("category"),
+            tag=params.optional("tag"),
+            status=params.text("status", "active"),
+            limit=params.integer("limit", 100, 1, 500),
+            offset=params.integer("offset", 0, 0, 10_000_000),
+        )
+
+    def api_filters(conn: sqlite3.Connection, params: Params, now: int) -> Any:
+        return queries.filters(conn)
+
+    def api_contents(conn: sqlite3.Connection, params: Params, now: int) -> Any:
+        dead = params.optional("dead_days")
+        return queries.list_contents(
+            conn,
+            now,
+            sort=params.text("sort", "efficiency"),
+            descending=params.descending(),
+            dead_days=params.integer("dead_days", 30, 1, 3650) if dead is not None else None,
+            limit=params.integer("limit", 100, 1, 500),
+            offset=params.integer("offset", 0, 0, 10_000_000),
+        )
+
+    def api_breakdown(conn: sqlite3.Connection, params: Params, now: int) -> Any:
+        return queries.breakdown(conn, params.text("by", "tracker"), params.text("range", "30d"), now)
+
+    routes: dict[str, Callable[[sqlite3.Connection, Params, int], Any]] = {
+        "/api/summary": api_summary,
+        "/api/timeseries": api_timeseries,
+        "/api/calendar": api_calendar,
+        "/api/heatmap": api_heatmap,
+        "/api/live": api_live,
+        "/api/torrents": api_torrents,
+        "/api/filters": api_filters,
+        "/api/contents": api_contents,
+        "/api/breakdown": api_breakdown,
+    }
+
+    class Handler(BaseHTTPRequestHandler):
+        server_version = f"SeedScope/{__version__}"
+        sys_version = ""
+
+        def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+            pass
+
+        def _send(self, status: int, body: bytes, content_type: str) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-cache")
+            for name, value in SECURITY_HEADERS.items():
+                self.send_header(name, value)
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+
+        def _json(self, payload: Any, status: int = HTTPStatus.OK) -> None:
+            body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+            self._send(status, body, "application/json; charset=utf-8")
+
+        def do_GET(self) -> None:  # noqa: N802
+            parts = urlsplit(self.path)
+            path = parts.path
+            try:
+                if path == "/healthz":
+                    self._json({"status": "ok", "version": __version__})
+                elif path in STATIC_FILES:
+                    filename, content_type = STATIC_FILES[path]
+                    self._send(HTTPStatus.OK, (STATIC_DIR / filename).read_bytes(), content_type)
+                elif path in routes:
+                    self._api(lambda conn, now: routes[path](conn, Params(parts.query), now))
+                elif path.startswith("/api/torrent/"):
+                    self._torrent(path.removeprefix("/api/torrent/"))
+                else:
+                    self._json({"error": "Introuvable"}, HTTPStatus.NOT_FOUND)
+            except queries.BadRequest as exc:
+                self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception:
+                log.exception("Erreur sur %s", path)
+                self._json({"error": "Erreur interne"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        do_HEAD = do_GET  # noqa: N815
+
+        def _api(self, query: Callable[[sqlite3.Connection, int], Any]) -> None:
+            conn = db.connect_readonly(config.db_path)
+            try:
+                self._json(query(conn, int(clock())))
+            finally:
+                conn.close()
+
+        def _torrent(self, torrent_hash: str) -> None:
+            conn = db.connect_readonly(config.db_path)
+            try:
+                detail = queries.torrent_detail(conn, torrent_hash, int(clock()))
+            finally:
+                conn.close()
+            if detail is None:
+                self._json({"error": "Torrent introuvable"}, HTTPStatus.NOT_FOUND)
+            else:
+                self._json(detail)
+
+    return Handler
+
+
+def make_server(
+    config: Config, state: LiveState, clock: Callable[[], float] = time.time
+) -> ThreadingHTTPServer:
+    server = ThreadingHTTPServer((config.host, config.port), make_handler(config, state, clock))
+    server.daemon_threads = True
+    return server

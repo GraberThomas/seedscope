@@ -527,7 +527,7 @@ async function contentsPage() {
   const noneValue = (value) => (value === '' ? '__none' : value);
   return [
     h('div', { class: 'stat-row' },
-      tile('Contenus', summary.contents.toLocaleString('fr-FR'), h('span', { class: 'delta', text: `${summary.cross_seeded} sur plusieurs trackers` })),
+      tile('Contenus', summary.contents.toLocaleString('fr-FR'), h('span', { class: 'delta', text: `${summary.cross_seeded} avec plusieurs torrents` })),
       tile('Volume seedé', `≈ ${bytes(summary.size)}`, h('span', { class: 'delta', text: 'Estimation haute' })),
       tile('Envoyé', bytes(summary.uploaded), h('span', { class: 'delta', text: 'Torrents présents, tous trackers confondus' })),
       tile('Envoyé / taille', summary.efficiency === null ? '–' : times(summary.efficiency)),

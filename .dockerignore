@@ -1,0 +1,10 @@
+.git
+.github
+.env
+.env.*
+tests
+scripts
+*.md
+compose.yaml
+__pycache__
+**/__pycache__

@@ -1,0 +1,38 @@
+# SeedScope: statistiques qBittorrent sur la durée.
+# Les données vivent dans un volume nommé, et le conteneur n'a accès à rien d'autre.
+
+name: seedscope
+
+services:
+  seedscope:
+    build: .
+    image: seedscope:local
+    container_name: seedscope
+    environment:
+      TZ: ${TZ:-Europe/Paris}
+      QBT_URL: ${QBT_URL:?definir QBT_URL dans .env}
+      QBT_USERNAME: ${QBT_USERNAME:?definir QBT_USERNAME dans .env}
+      QBT_PASSWORD: ${QBT_PASSWORD:?definir QBT_PASSWORD dans .env}
+      SEEDSCOPE_TRACKER_ALIASES: ${SEEDSCOPE_TRACKER_ALIASES:-}
+    volumes:
+      - seedscope-data:/data
+    ports:
+      - "127.0.0.1:${SEEDSCOPE_PORT:-3310}:8080"
+      - "${SEEDSCOPE_LAN_IP:?definir SEEDSCOPE_LAN_IP dans .env}:${SEEDSCOPE_PORT:-3310}:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+    pids_limit: 64
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+volumes:
+  seedscope-data:

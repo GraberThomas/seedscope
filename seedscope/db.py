@@ -101,6 +101,14 @@ MIGRATIONS = [
     ) WITHOUT ROWID;
     CREATE INDEX torrent_samples_tier ON torrent_samples (tier, ts);
     """,
+    """
+    -- alltime_ul also counts network overhead, which grows with downloads: it stays stored
+    -- as qBittorrent reports it, and periods are measured on this payload counter instead.
+    ALTER TABLE global_minute ADD COLUMN payload_ul INTEGER NOT NULL DEFAULT 0;
+    UPDATE global_minute SET payload_ul = alltime_ul;
+    INSERT INTO meta (key, value)
+        SELECT 'payload_ul', CAST(alltime_ul AS TEXT) FROM global_minute ORDER BY ts DESC LIMIT 1;
+    """,
 ]
 
 

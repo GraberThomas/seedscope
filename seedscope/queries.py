@@ -246,13 +246,13 @@ def _global_volume(conn: sqlite3.Connection, kind: str, keys: list[Any]) -> dict
         # Hourly rollups are too coarse here: rebuild deltas from the counters.
         previous = None
         for row in conn.execute(
-            "SELECT ts, alltime_ul, alltime_dl FROM global_minute WHERE ts >= ? ORDER BY ts",
+            "SELECT ts, payload_ul, alltime_dl FROM global_minute WHERE ts >= ? ORDER BY ts",
             (keys[0] - STEPS[kind],),
         ):
             if previous is not None:
                 add(
                     _bucket_key(kind, row["ts"]),
-                    counter_delta(previous["alltime_ul"], row["alltime_ul"]),
+                    counter_delta(previous["payload_ul"], row["payload_ul"]),
                     counter_delta(previous["alltime_dl"], row["alltime_dl"]),
                 )
             previous = row
@@ -275,11 +275,11 @@ def _period_totals(conn: sqlite3.Connection, start: int, end: int) -> dict[str, 
     """Bytes transferred and peak speed between two timestamps."""
     if end - start <= MINUTE_TOTALS_MAX:
         first = conn.execute(
-            "SELECT alltime_ul, alltime_dl FROM global_minute WHERE ts >= ? AND ts <= ? ORDER BY ts LIMIT 1",
+            "SELECT payload_ul, alltime_dl FROM global_minute WHERE ts >= ? AND ts <= ? ORDER BY ts LIMIT 1",
             (start, end),
         ).fetchone()
         last = conn.execute(
-            "SELECT alltime_ul, alltime_dl FROM global_minute WHERE ts >= ? AND ts <= ? ORDER BY ts DESC LIMIT 1",
+            "SELECT payload_ul, alltime_dl FROM global_minute WHERE ts >= ? AND ts <= ? ORDER BY ts DESC LIMIT 1",
             (start, end),
         ).fetchone()
         peak = conn.execute(
@@ -289,7 +289,7 @@ def _period_totals(conn: sqlite3.Connection, start: int, end: int) -> dict[str, 
         if first is None:
             return {"up": 0, "dl": 0, "peak": 0}
         return {
-            "up": counter_delta(first["alltime_ul"], last["alltime_ul"]),
+            "up": counter_delta(first["payload_ul"], last["payload_ul"]),
             "dl": counter_delta(first["alltime_dl"], last["alltime_dl"]),
             "peak": peak,
         }

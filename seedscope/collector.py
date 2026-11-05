@@ -119,15 +119,26 @@ class LiveState:
 
 
 def store_global_sample(
-    conn: sqlite3.Connection, sample: GlobalSample, previous: tuple[int, int] | None
+    conn: sqlite3.Connection,
+    sample: GlobalSample,
+    previous: tuple[int, int] | None,
+    payload_ul: int | None = None,
 ) -> None:
-    """Store one sample and add its counter growth to the hourly rollup."""
-    up_delta = counter_delta(previous[0], sample.alltime_ul) if previous else 0
+    """Store one sample and add its counter growth to the hourly rollup.
+
+    With ``payload_ul``, upload is rolled up separately from the torrents. Without it (import
+    of old history, which has nothing finer), the global counter is the only source.
+    """
+    if payload_ul is None:
+        up_delta = counter_delta(previous[0], sample.alltime_ul) if previous else 0
+        payload_ul = sample.alltime_ul
+    else:
+        up_delta = 0
     dl_delta = counter_delta(previous[1], sample.alltime_dl) if previous else 0
     conn.execute(
         "INSERT OR REPLACE INTO global_minute "
-        "(ts, up_speed, dl_speed, alltime_ul, alltime_dl, peers, free_space) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "(ts, up_speed, dl_speed, alltime_ul, alltime_dl, peers, free_space, payload_ul) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (
             sample.ts,
             sample.up_speed,
@@ -136,6 +147,7 @@ def store_global_sample(
             sample.alltime_dl,
             sample.peers,
             sample.free_space,
+            payload_ul,
         ),
     )
     hour = sample.ts - sample.ts % 3600
@@ -171,6 +183,19 @@ def store_global_sample(
             sample.alltime_ul,
             sample.alltime_dl,
         ),
+    )
+
+
+def add_payload_upload(conn: sqlite3.Connection, ts: int, up_bytes: int) -> None:
+    """Count upload seen on the torrents, for good: removing a torrent later takes nothing back."""
+    db.set_meta(conn, "payload_ul", int(db.get_meta(conn, "payload_ul") or 0) + up_bytes)
+    hour = ts - ts % 3600
+    local = time.localtime(hour)
+    conn.execute(
+        "INSERT INTO global_hourly (hour, day, weekday, hour_of_day, up_bytes) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT (hour) DO UPDATE SET up_bytes = up_bytes + excluded.up_bytes",
+        (hour, time.strftime("%Y-%m-%d", local), local.tm_wday, local.tm_hour, up_bytes),
     )
 
 
@@ -217,8 +242,9 @@ class Collector:
             peers=int(server.get("total_peer_connections") or 0),
             free_space=int(server.get("free_space_on_disk") or 0),
         )
+        payload_ul = int(db.get_meta(self.conn, "payload_ul") or 0)
         with self.conn:
-            store_global_sample(self.conn, sample, tuple(row) if row else None)
+            store_global_sample(self.conn, sample, tuple(row) if row else None, payload_ul)
         with self.state.lock:
             self.state.connection_status = str(server.get("connection_status") or "")
 
@@ -273,6 +299,7 @@ class Collector:
         if last_poll is None or local_day(last_poll) != day:
             tier = 2
         seen: set[str] = set()
+        total_up = 0
         for torrent in torrents:
             torrent_hash = torrent["hash"]
             seen.add(torrent_hash)
@@ -289,6 +316,7 @@ class Collector:
             else:
                 # Counters from before collection started cannot be dated.
                 up_delta = dl_delta = 0
+            total_up += up_delta
 
             host = tracker_host(str(torrent.get("tracker") or ""))
             if not host and previous is not None:
@@ -383,6 +411,9 @@ class Collector:
                         "up = up + excluded.up, dl = dl + excluded.dl",
                         (torrent_hash, bucket, up_delta, dl_delta),
                     )
+
+        if total_up:
+            add_payload_upload(self.conn, now, total_up)
 
         for torrent_hash, row in known.items():
             if torrent_hash not in seen and row["removed_at"] is None:

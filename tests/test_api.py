@@ -80,7 +80,8 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(data["contents"], 2)
         self.assertEqual(data["size_total"], 40 * GIB)
         self.assertEqual(data["size_unique"], 30 * GIB)
-        self.assertEqual(data["up_7d"], 7 * 24 * GIB)
+        # Hourly totals: the imported counter, plus the 3 GiB sent by Film.A in the last poll.
+        self.assertEqual(data["up_7d"], 7 * 24 * GIB + 3 * GIB)
         self.assertEqual(data["up_7d_previous"], 7 * 24 * GIB)
         self.assertIsNone(data["up_30d_previous"])  # only 40 days of history
         self.assertEqual(data["ratio"], round((24 * 40 + 1) / 2000, 3))
@@ -112,7 +113,7 @@ class ApiTest(unittest.TestCase):
 
     def test_week_buckets_add_up_to_daily_totals(self):
         volume = self.get("/api/timeseries?range=90d")["volume"]
-        self.assertEqual(sum(volume["up"]), 24 * 40 * GIB)
+        self.assertEqual(sum(volume["up"]), 24 * 40 * GIB + 3 * GIB)
         self.assertEqual(dt.date.fromisoformat(volume["keys"][-1]).weekday(), 0)
 
     def test_popularity(self):

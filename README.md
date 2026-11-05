@@ -210,6 +210,11 @@ docker run --rm --network <reseau-de-prometheus> -v seedscope_seedscope-data:/da
 - **Pic et courbes** : le pic vient des mesures les plus fines, alors que les courbes longues affichent des moyennes.
   Il peut donc dépasser le haut de la courbe.
 - **Coupures** : l'upload transféré pendant un arrêt de SeedScope est compté à la reprise.
+- **Upload d'une période** : c'est la somme de ce que chaque torrent a envoyé à chaque collecte, soit toutes les 5 minutes
+  par défaut. Le compteur global de qBittorrent inclut aussi le trafic réseau, qui grimpe pendant un gros téléchargement :
+  il n'alimente que le ratio global et l'upload cumulé, pour rester identiques à qBittorrent.
+- **Torrents supprimés** : ce qu'ils ont envoyé reste compté. Seul l'upload transféré depuis la dernière collecte, juste
+  avant la suppression, est perdu.
 
 ## Sécurité
 

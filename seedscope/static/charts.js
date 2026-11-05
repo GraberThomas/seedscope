@@ -118,37 +118,68 @@ function emptyState(message) {
   return h('div', { class: 'empty', text: message });
 }
 
+// ---- Which series the reader chose to hide, remembered per chart ----
+const HIDDEN_STORAGE = 'seedscope-hidden-series';
+
+function readHidden() {
+  try {
+    return JSON.parse(localStorage.getItem(HIDDEN_STORAGE)) || {};
+  } catch {
+    return {};
+  }
+}
+
+function writeHidden(chartId, names) {
+  const all = readHidden();
+  if (names.size) all[chartId] = [...names];
+  else delete all[chartId];
+  try {
+    localStorage.setItem(HIDDEN_STORAGE, JSON.stringify(all));
+  } catch { /* storage unavailable: the choice lasts until the next redraw */ }
+}
+
 // ---- Line chart with a crosshair that snaps to the nearest position ----
-export function lineChart({ ts, series, format, axisFormat, binary = false, zero = true, area = false, height = 240, empty, ariaLabel, connectGaps = false }) {
+export function lineChart({ ts, series, format, axisFormat, binary = false, zero = true, area = false, height = 240, empty, ariaLabel, connectGaps = false, chartId }) {
   const points = ts.length;
   const usable = series.some((s) => s.values.filter((v) => v !== null).length >= 2);
   if (!usable) return emptyState(empty);
 
+  const id = chartId || ariaLabel;
+  const hidden = new Set((readHidden()[id] || []).filter((name) => series.some((s) => s.name === name)));
+  if (hidden.size >= series.length) hidden.clear();
+
   const box = h('div', { class: 'chart' });
-  const wrap = h('div', {}, legend(series), box);
-  const present = series.flatMap((s) => s.values).filter((v) => v !== null);
-  let min = zero ? 0 : Math.min(...present);
-  let max = Math.max(...present);
-  if (max === min) max = min + (min || 1);
-  if (!zero) {
-    const pad = (max - min) * 0.1;
-    min = Math.max(0, min - pad);
-    max += pad;
-  }
-  const yTicks = ticks(min, max, binary);
-  const yMin = zero ? 0 : yTicks[0];
-  const yMax = yTicks[yTicks.length - 1];
-  // Without a dedicated formatter, ticks get just enough decimals to stay distinct.
-  const tickStep = yTicks.length > 1 ? yTicks[1] - yTicks[0] : 1;
-  const tickDigits = Math.max(0, Math.ceil(-Math.log10(tickStep) - 1e-9));
-  const axisText = axisFormat || ((value) => value.toLocaleString('fr-FR', { minimumFractionDigits: tickDigits, maximumFractionDigits: tickDigits }));
   const span = ts[points - 1] - ts[0] || 1;
   const gaps = ts.slice(1).map((t, i) => t - ts[i]).sort((a, b) => a - b);
   // Sparse series (samples stored on change) are drawn as one continuous line.
   const breakAfter = connectGaps ? Infinity : (gaps[Math.floor(gaps.length / 2)] || 60) * 5;
+  let lastWidth = 0;
 
-  observeWidth(box, (width) => {
-    const margin = { top: 16, right: series.length === 1 ? 76 : 14, bottom: 26, left: 70 };
+  const draw = (width) => {
+    lastWidth = width;
+    const shown = series.filter((s) => !hidden.has(s.name));
+    const present = shown.flatMap((s) => s.values).filter((v) => v !== null);
+    if (!present.length) {
+      box.replaceChildren(emptyState(empty));
+      return;
+    }
+    let min = zero ? 0 : Math.min(...present);
+    let max = Math.max(...present);
+    if (max === min) max = min + (min || 1);
+    if (!zero) {
+      const pad = (max - min) * 0.1;
+      min = Math.max(0, min - pad);
+      max += pad;
+    }
+    const yTicks = ticks(min, max, binary);
+    const yMin = zero ? 0 : yTicks[0];
+    const yMax = yTicks[yTicks.length - 1];
+    // Without a dedicated formatter, ticks get just enough decimals to stay distinct.
+    const tickStep = yTicks.length > 1 ? yTicks[1] - yTicks[0] : 1;
+    const tickDigits = Math.max(0, Math.ceil(-Math.log10(tickStep) - 1e-9));
+    const axisText = axisFormat || ((value) => value.toLocaleString('fr-FR', { minimumFractionDigits: tickDigits, maximumFractionDigits: tickDigits }));
+
+    const margin = { top: 16, right: shown.length === 1 ? 76 : 14, bottom: 26, left: 70 };
     const plotW = Math.max(40, width - margin.left - margin.right);
     const plotH = height - margin.top - margin.bottom;
     const x = (t) => margin.left + ((t - ts[0]) / span) * plotW;
@@ -169,7 +200,7 @@ export function lineChart({ ts, series, format, axisFormat, binary = false, zero
       svg('text', { x: x(t), y: height - 8, 'text-anchor': anchor, class: 'axis-label', text: timeLabel(t, span) }, root);
     }
 
-    for (const s of series) {
+    for (const s of shown) {
       let path = '';
       const segments = [];
       let start = null;
@@ -178,7 +209,7 @@ export function lineChart({ ts, series, format, axisFormat, binary = false, zero
         if (value === null) { previous = null; return; }
         const brokenGap = previous !== null && ts[i] - ts[previous] > breakAfter;
         if (previous === null || brokenGap) {
-          if (start !== null) segments.push([start, previous]);
+          if (start !== null && previous !== null) segments.push([start, previous]);
           start = i;
           path += `M${x(ts[i]).toFixed(1)} ${y(value).toFixed(1)}`;
         } else {
@@ -186,7 +217,7 @@ export function lineChart({ ts, series, format, axisFormat, binary = false, zero
         }
         previous = i;
       });
-      if (start !== null) segments.push([start, previous]);
+      if (start !== null && previous !== null) segments.push([start, previous]);
       if (area) {
         const base = y(yMin).toFixed(1);
         let fill = '';
@@ -200,19 +231,19 @@ export function lineChart({ ts, series, format, axisFormat, binary = false, zero
       svg('path', { d: path, fill: 'none', stroke: s.color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, root);
     }
 
-    if (series.length === 1) {
-      const values = series[0].values;
+    if (shown.length === 1) {
+      const values = shown[0].values;
       let last = values.length - 1;
       while (last > 0 && values[last] === null) last -= 1;
       if (values[last] !== null) {
-        svg('circle', { cx: x(ts[last]), cy: y(values[last]), r: 4, fill: series[0].color, stroke: 'var(--surface)', 'stroke-width': 2 }, root);
+        svg('circle', { cx: x(ts[last]), cy: y(values[last]), r: 4, fill: shown[0].color, stroke: 'var(--surface)', 'stroke-width': 2 }, root);
         svg('text', { x: x(ts[last]) + 8, y: y(values[last]) + 4, class: 'end-label', text: format(values[last]) }, root);
       }
     }
 
     const cross = svg('g', { visibility: 'hidden' }, root);
     const crossLine = svg('line', { y1: margin.top, y2: margin.top + plotH, stroke: 'var(--axis)' }, cross);
-    const dots = series.map((s) => svg('circle', { r: 4, fill: s.color, stroke: 'var(--surface)', 'stroke-width': 2 }, cross));
+    const dots = shown.map((s) => svg('circle', { r: 4, fill: s.color, stroke: 'var(--surface)', 'stroke-width': 2 }, cross));
     const nearest = (target) => {
       let low = 0;
       let high = points - 1;
@@ -228,7 +259,7 @@ export function lineChart({ ts, series, format, axisFormat, binary = false, zero
       const px = x(ts[index]);
       crossLine.setAttribute('x1', px);
       crossLine.setAttribute('x2', px);
-      series.forEach((s, i) => {
+      shown.forEach((s, i) => {
         const value = s.values[index];
         dots[i].setAttribute('visibility', value === null ? 'hidden' : 'visible');
         if (value !== null) {
@@ -238,7 +269,7 @@ export function lineChart({ ts, series, format, axisFormat, binary = false, zero
       });
       cross.setAttribute('visibility', 'visible');
       const title = new Date(ts[index] * 1000).toLocaleString('fr-FR', { dateStyle: 'medium', timeStyle: span > 120 * 86400 ? undefined : 'short' });
-      showTip(clientX, clientY, title, series.map((s) => ({
+      showTip(clientX, clientY, title, shown.map((s) => ({
         color: s.color, value: s.values[index] === null ? '–' : format(s.values[index]), label: s.name,
       })));
     };
@@ -260,8 +291,41 @@ export function lineChart({ ts, series, format, axisFormat, binary = false, zero
       select(next, rect.left + x(ts[next]) * scale(), rect.top + margin.top + 20);
     });
     box.replaceChildren(root);
-  });
-  return wrap;
+  };
+
+  const toggles = series.length < 2 ? null : h('div', { class: 'legend legend-toggles', role: 'group', 'aria-label': 'Courbes affichées' });
+  if (toggles) {
+    const syncToggles = () => {
+      const lastShown = series.length - hidden.size === 1;
+      for (const button of toggles.children) {
+        const visible = !hidden.has(button.dataset.name);
+        button.setAttribute('aria-pressed', String(visible));
+        // One curve always stays: an empty chart would answer nothing.
+        button.disabled = visible && lastShown;
+        button.title = button.disabled ? 'Au moins une courbe reste affichée' : `${visible ? 'Masquer' : 'Afficher'} cette courbe`;
+      }
+    };
+    for (const s of series) {
+      const key = h('span', { class: 'key-line' });
+      key.style.background = s.color;
+      toggles.append(h('button', {
+        type: 'button',
+        'data-name': s.name,
+        onclick: (event) => {
+          if (hidden.has(s.name)) hidden.delete(s.name); else hidden.add(s.name);
+          writeHidden(id, hidden);
+          syncToggles();
+          hideTip();
+          if (lastWidth) draw(lastWidth);
+          // After a mouse click, focus must not keep the page from refreshing itself.
+          if (event.detail > 0) event.currentTarget.blur();
+        },
+      }, key, document.createTextNode(s.name)));
+    }
+    syncToggles();
+  }
+  observeWidth(box, draw);
+  return h('div', {}, toggles, box);
 }
 
 // ---- Column chart, stacked when given several series ----

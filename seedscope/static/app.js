@@ -279,7 +279,7 @@ async function overview() {
       lineChart({
         ts: series.ts,
         series: [{ name: 'Envoi', color: UP, values: series.up }, { name: 'Réception', color: DOWN, values: series.dl }],
-        format: speed, axisFormat: speedAxis, binary: true, empty: NO_DATA, ariaLabel: 'Débits d’envoi et de réception',
+        format: speed, axisFormat: speedAxis, binary: true, empty: NO_DATA, ariaLabel: 'Débits d’envoi et de réception', chartId: 'speeds',
       }),
       speedTable),
     h('div', { class: 'grid-2' },
@@ -486,7 +486,7 @@ async function torrentDetail(hash) {
       curve('Popularité', 'Ratio divisé par le nombre de mois actifs', { series: [{ name: 'Popularité', color: UP, values: data.series.popularity }], format: (v) => number(v, 4) }),
       curve('Seeders et leechers', 'Tels qu’annoncés par le tracker', {
         series: [{ name: 'Seeders', color: UP, values: data.series.seeders }, { name: 'Leechers', color: DOWN, values: data.series.leechers }],
-        format: (v) => number(v, Number.isInteger(v) ? 0 : 1), zero: true,
+        format: (v) => number(v, Number.isInteger(v) ? 0 : 1), zero: true, chartId: 'swarm',
       })),
     h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { text: 'Mesures de ces courbes' })), samplesTable()),
     data.siblings.length ? card('Même contenu sur d’autres trackers', 'Cross-seeds partageant ces données',
@@ -618,12 +618,12 @@ async function contentDetail(key) {
         }).reverse(),
       ) : null),
     h('div', { class: 'grid-2' },
-      curve('Upload cumulé par tracker', null, { series: trackerSeries(data.series.by_tracker), format: bytes, axisFormat: bytesAxis, binary: true }),
+      curve('Upload cumulé par tracker', null, { series: trackerSeries(data.series.by_tracker), format: bytes, axisFormat: bytesAxis, binary: true, chartId: 'content-trackers' }),
       curve('Envoyé / taille', 'Combien de fois ce contenu a été renvoyé', { series: [{ name: 'Envoyé / taille', color: UP, values: data.series.efficiency }], format: (v) => number(v, 3) }),
       curve('Popularité', 'La meilleure de ses torrents', { series: [{ name: 'Popularité', color: UP, values: data.series.popularity }], format: (v) => number(v, 4) }),
       curve('Seeders et leechers', 'Additionnés sur ses trackers', {
         series: [{ name: 'Seeders', color: UP, values: data.series.seeders }, { name: 'Leechers', color: DOWN, values: data.series.leechers }],
-        format: (v) => number(v, 0), zero: true,
+        format: (v) => number(v, 0), zero: true, chartId: 'swarm',
       })),
     h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { text: 'Mesures de ces courbes' })), samplesTable()),
     card('Ses torrents', null,

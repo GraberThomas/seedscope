@@ -46,6 +46,7 @@ Sur toutes les pages :
 
 - **Dix durées** : 1 h, 6 h, 24 h, 3 j, 7 j, 30 j, 90 j, 6 mois, 1 an ou tout l'historique.
 - **Courbes à la carte** : un clic sur la légende masque l'envoi, la réception ou un tracker, et l'échelle s'adapte.
+- **Tableaux triables** : un clic sur une colonne trie, un second inverse, et les valeurs inconnues restent en bas.
 - **Bouton Actualiser** : lance tout de suite une collecte complète.
 - **Quatre palettes de couleurs** en mode clair, sombre ou système, vérifiées pour le contraste et le daltonisme.
 - **Interface adaptée au mobile**, navigation au clavier, et un tableau pour chaque graphique.

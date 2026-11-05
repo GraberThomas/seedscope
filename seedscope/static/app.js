@@ -1,4 +1,5 @@
 import { barChart, calendarChart, h, heatmapChart, hideTip, lineChart, rankedBars, sparkline } from './charts.js';
+import { sortRows, startsDescending } from './table-sort.js';
 
 const view = document.getElementById('view');
 const WEEKDAYS = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
@@ -44,7 +45,7 @@ const ui = {
   contentSort: { key: 'size', desc: true },
   contentPage: 0,
   contentWindow: 30,
-  popularity: { mode: 'popularity', scope: 'content', page: 0 },
+  popularity: { mode: 'popularity', scope: 'content', page: 0, sort: null },
   liveScope: 'content',
   liveDirection: 'all',
   contents: { sort: 'uploaded', desc: true, q: '', tracker: '', category: '', tag: '', window: 30, page: 0 },
@@ -192,8 +193,7 @@ function select(label, options, current, onChange) {
   return h('label', { class: 'field' }, label, element);
 }
 
-function dataTable(columns, rows, { sort, onSort, empty } = {}) {
-  if (!rows.length) return h('div', { class: 'empty', text: empty || 'Aucun résultat.' });
+function tableNode(columns, rows, sort, onSort) {
   const headCells = columns.map((column) => {
     const active = sort && sort.key === column.key;
     const className = column.num ? 'num' : null;
@@ -212,6 +212,34 @@ function dataTable(columns, rows, { sort, onSort, empty } = {}) {
     return h('td', { class: className, text: content ?? '–' });
   })));
   return h('div', { class: 'table-wrap' }, h('table', {}, h('thead', {}, h('tr', {}, headCells)), h('tbody', {}, body)));
+}
+
+// Sort chosen per table, by its column labels: it must survive the periodic page refresh.
+const localSorts = new Map();
+
+// With onSort, the caller sorts on the server. Otherwise every row is here: sort in the page.
+function dataTable(columns, rows, { sort, onSort, empty } = {}) {
+  if (!rows.length) return h('div', { class: 'empty', text: empty || 'Aucun résultat.' });
+  if (onSort) return tableNode(columns, rows, sort, onSort);
+  const id = columns.map((column) => column.label).join('|');
+  const sortable = columns.map((column) => ({ ...column, sortable: true }));
+  let node;
+  const draw = () => {
+    const current = localSorts.get(id);
+    const column = current && columns.find((item) => item.key === current.key);
+    return tableNode(sortable, column ? sortRows(rows, column, current.desc) : rows, current, (key) => {
+      const previous = localSorts.get(id);
+      const desc = previous?.key === key ? !previous.desc : startsDescending(columns.find((item) => item.key === key), rows);
+      localSorts.set(id, { key, desc });
+      const next = draw();
+      node.replaceWith(next);
+      next.scrollLeft = node.scrollLeft;
+      next.querySelectorAll('th button')[columns.findIndex((item) => item.key === key)]?.focus();
+      node = next;
+    });
+  };
+  node = draw();
+  return node;
 }
 
 // Every chart has a table twin, built only when opened.
@@ -256,7 +284,7 @@ async function overview() {
 
   const speedTable = tableView(
     () => [
-      { key: 'time', label: 'Date' },
+      { key: 'time', label: 'Date', order: -1 },
       { key: 'up', label: 'Envoi', num: true, format: speed },
       { key: 'dl', label: 'Réception', num: true, format: speed },
     ],
@@ -267,14 +295,14 @@ async function overview() {
   );
   const volumeTable = tableView(
     () => [
-      { key: 'label', label: 'Période' },
+      { key: 'label', label: 'Période', order: -1 },
       { key: 'up', label: 'Envoyé', num: true, format: bytes },
     ],
     () => series.volume.keys.map((_, i) => ({ label: tips[i], up: series.volume.up[i] })).reverse(),
   );
   const totalsTable = () => tableView(
     () => [
-      { key: 'time', label: 'Date' },
+      { key: 'time', label: 'Date', order: -1 },
       { key: 'ul', label: 'Envoyé au total', num: true, format: bytes },
       { key: 'ratio', label: 'Ratio', num: true, format: ratioText },
     ],
@@ -410,13 +438,13 @@ async function activity() {
     card('Upload par jour', '371 derniers jours',
       calendarChart({ ...cal, format: bytes, formatDay: dayLabel, empty: NO_DATA }),
       tableView(
-        () => [{ key: 'label', label: 'Jour' }, { key: 'up', label: 'Envoyé', num: true, format: bytes }],
+        () => [{ key: 'label', label: 'Jour', order: -1 }, { key: 'up', label: 'Envoyé', num: true, format: bytes }],
         () => [...cal.days].reverse().map((day) => ({ label: dayLabel(day.day), up: day.up })),
       )),
     card('Heures actives', `Upload moyen par heure, sur ${heat.days} jours`,
       heatmapChart({ cells: heat.cells, format: bytes, weekdays: WEEKDAYS, empty: NO_DATA }),
       tableView(
-        () => [{ key: 'day', label: 'Jour' }, ...Array.from({ length: 24 }, (_, hour) => ({ key: `h${hour}`, label: `${hour} h`, num: true, format: bytes }))],
+        () => [{ key: 'day', label: 'Jour', order: 1 }, ...Array.from({ length: 24 }, (_, hour) => ({ key: `h${hour}`, label: `${hour} h`, num: true, format: bytes }))],
         () => WEEKDAYS.map((day, weekday) => {
           const row = { day };
           for (let hour = 0; hour < 24; hour += 1) row[`h${hour}`] = lookup.get(`${weekday}-${hour}`) ?? null;
@@ -491,7 +519,7 @@ async function torrentDetail(hash) {
   const curve = (title, subtitle, options) => card(title, subtitle, lineChart({ ts, connectGaps: true, zero: false, height: 200, empty: noCurve, ariaLabel: `${title} de ce torrent`, ...options }));
   const samplesTable = () => tableView(
     () => [
-      { key: 'time', label: 'Date' },
+      { key: 'time', label: 'Date', order: 1 },
       { key: 'uploaded', label: 'Envoyé', num: true, format: bytes },
       { key: 'ratio', label: 'Ratio', num: true, format: ratioText },
       { key: 'popularity', label: 'Popularité', num: true, format: popularityText },
@@ -534,7 +562,7 @@ async function torrentDetail(hash) {
         format: bytes, axisFormat: bytesAxis, height: 200, empty: 'Aucun envoi enregistré sur cette période.', ariaLabel: 'Volume envoyé par ce torrent',
       }),
       data.volume.up.some((value) => value > 0) ? tableView(
-        () => [{ key: 'label', label: 'Période' }, { key: 'up', label: 'Envoyé', num: true, format: bytes }, { key: 'dl', label: 'Reçu', num: true, format: bytes }],
+        () => [{ key: 'label', label: 'Période', order: -1 }, { key: 'up', label: 'Envoyé', num: true, format: bytes }, { key: 'dl', label: 'Reçu', num: true, format: bytes }],
         () => data.volume.keys.map((_, i) => ({ label: tips[i], up: data.volume.up[i], dl: data.volume.dl[i] })).reverse(),
       ) : null),
     h('div', { class: 'grid-2' },
@@ -628,7 +656,7 @@ async function contentDetail(key) {
   const volumeTotal = data.volume.keys.map((_, i) => volumeSeries.reduce((sum, s) => sum + s.values[i], 0));
   const samplesTable = () => tableView(
     () => [
-      { key: 'time', label: 'Date' },
+      { key: 'time', label: 'Date', order: 1 },
       { key: 'uploaded', label: 'Envoyé', num: true, format: bytes },
       { key: 'efficiency', label: 'Envoyé / taille', num: true, format: times },
       { key: 'popularity', label: 'Popularité', num: true, format: popularityText },
@@ -667,7 +695,7 @@ async function contentDetail(key) {
         empty: 'Aucun envoi enregistré sur cette période.', ariaLabel: 'Volume envoyé par ce contenu, par tracker',
       }),
       volumeTotal.some((value) => value > 0) ? tableView(
-        () => [{ key: 'label', label: 'Période' }, ...volumeSeries.map((s, i) => ({ key: `s${i}`, label: s.name, num: true, format: bytes }))],
+        () => [{ key: 'label', label: 'Période', order: -1 }, ...volumeSeries.map((s, i) => ({ key: `s${i}`, label: s.name, num: true, format: bytes }))],
         () => data.volume.keys.map((_, i) => {
           const row = { label: tips[i] };
           volumeSeries.forEach((s, k) => { row[`s${k}`] = s.values[i]; });
@@ -691,9 +719,9 @@ async function contentDetail(key) {
         { key: 'ratio', label: 'Ratio', num: true, format: ratioText },
         { key: 'spark', label: '30 jours', render: (row) => sparkline(row.spark) },
         { key: 'popularity', label: 'Popularité', num: true, format: popularityText },
-        { key: 'seeders', label: 'Seeders', num: true, render: (row) => swarm(row.num_complete) },
-        { key: 'leechers', label: 'Leechers', num: true, render: (row) => swarm(row.num_incomplete) },
-        { key: 'state', label: 'État', render: (row) => (row.removed_at ? 'Supprimé' : 'Présent') },
+        { key: 'seeders', label: 'Seeders', num: true, sortValue: (row) => row.num_complete, render: (row) => swarm(row.num_complete) },
+        { key: 'leechers', label: 'Leechers', num: true, sortValue: (row) => row.num_incomplete, render: (row) => swarm(row.num_incomplete) },
+        { key: 'state', label: 'État', sortValue: (row) => (row.removed_at ? 1 : 0), render: (row) => (row.removed_at ? 'Supprimé' : 'Présent') },
       ], data.torrents)),
   ];
 }
@@ -708,7 +736,13 @@ async function popularityPage() {
   const state = ui.popularity;
   const mode = POPULARITY_MODES[state.mode];
   const byContent = state.scope === 'content';
-  const listParams = { sort: mode.sort, dir: mode.desc ? 'desc' : 'asc', known_swarm: 1, limit: PAGE_SIZE, offset: state.page * PAGE_SIZE, window: 30 };
+  const sort = state.sort || { key: mode.sort, desc: mode.desc };
+  const onSort = (key) => {
+    state.sort = { key, desc: sort.key === key ? !sort.desc : !['name', 'tracker'].includes(key) };
+    state.page = 0;
+    render();
+  };
+  const listParams = { sort: sort.key, dir: sort.desc ? 'desc' : 'asc', known_swarm: 1, limit: PAGE_SIZE, offset: state.page * PAGE_SIZE, window: 30 };
   const [summary, data] = await Promise.all([
     api('/api/popularity'),
     api(`${byContent ? '/api/contents' : '/api/torrents'}?${query(listParams)}`),
@@ -716,20 +750,20 @@ async function popularityPage() {
   const trackerRows = summary.trackers.filter((row) => row.popularity > 0);
   const columns = byContent
     ? [
-      { key: 'name', label: 'Contenu', className: 'name', render: contentLink },
+      { key: 'name', label: 'Contenu', sortable: true, className: 'name', render: contentLink },
       { key: 'trackers', label: 'Trackers', render: (row) => tags(row.trackers) },
-      { key: 'popularity', label: 'Popularité', num: true, format: popularityText },
-      { key: 'seeders', label: 'Seeders', num: true, format: swarm },
-      { key: 'leechers', label: 'Leechers', num: true, format: swarm },
-      { key: 'efficiency', label: 'Envoyé / taille', num: true, format: times },
+      { key: 'popularity', label: 'Popularité', sortable: true, num: true, format: popularityText },
+      { key: 'seeders', label: 'Seeders', sortable: true, num: true, format: swarm },
+      { key: 'leechers', label: 'Leechers', sortable: true, num: true, format: swarm },
+      { key: 'efficiency', label: 'Envoyé / taille', sortable: true, num: true, format: times },
     ]
     : [
-      { key: 'name', label: 'Torrent', className: 'name', render: torrentLink },
-      { key: 'tracker', label: 'Tracker', className: 'nowrap', format: trackerName },
-      { key: 'popularity', label: 'Popularité', num: true, format: popularityText },
-      { key: 'seeders', label: 'Seeders', num: true, render: (row) => swarm(row.num_complete) },
-      { key: 'leechers', label: 'Leechers', num: true, render: (row) => swarm(row.num_incomplete) },
-      { key: 'ratio', label: 'Ratio', num: true, format: ratioText },
+      { key: 'name', label: 'Torrent', sortable: true, className: 'name', render: torrentLink },
+      { key: 'tracker', label: 'Tracker', sortable: true, className: 'nowrap', format: trackerName },
+      { key: 'popularity', label: 'Popularité', sortable: true, num: true, format: popularityText },
+      { key: 'seeders', label: 'Seeders', sortable: true, num: true, render: (row) => swarm(row.num_complete) },
+      { key: 'leechers', label: 'Leechers', sortable: true, num: true, render: (row) => swarm(row.num_incomplete) },
+      { key: 'ratio', label: 'Ratio', sortable: true, num: true, format: ratioText },
     ];
   return [
     h('div', { class: 'stat-row' },
@@ -752,16 +786,16 @@ async function popularityPage() {
         () => summary.trackers,
       )),
     h('div', { class: 'filters' },
-      scopeFilter(state.scope, (value) => { state.scope = value; state.page = 0; render(); }),
+      scopeFilter(state.scope, (value) => { state.scope = value; state.sort = null; state.page = 0; render(); }),
       segmented('Classement', Object.entries(POPULARITY_MODES).map(([value, item]) => [value, item.label]), state.mode, (value) => {
-        state.mode = value; state.page = 0; render();
+        state.mode = value; state.sort = null; state.page = 0; render();
       }),
       h('span', { class: 'subtle', text: mode.note })),
     h('section', { class: 'card' },
       dataTable([...columns,
-        { key: 'up_period', label: 'Sur 30 j', num: true, format: bytes },
+        { key: 'up_period', label: 'Sur 30 j', sortable: true, num: true, format: bytes },
         { key: 'spark', label: '30 jours', render: (row) => sparkline(row.spark) },
-      ], data.rows),
+      ], data.rows, { sort, onSort }),
       pager(data.total, state.page, (page) => { state.page = page; render(); })),
   ];
 }
@@ -784,7 +818,7 @@ async function trackers() {
         format: bytes, axisFormat: bytesAxis, empty: NO_DATA, ariaLabel: `Volume envoyé par ${noun}`,
       }),
       tableView(
-        () => [{ key: 'label', label: 'Période' }, ...series.map((s, i) => ({ key: `s${i}`, label: s.name, num: true, format: bytes }))],
+        () => [{ key: 'label', label: 'Période', order: -1 }, ...series.map((s, i) => ({ key: `s${i}`, label: s.name, num: true, format: bytes }))],
         () => data.keys.map((_, i) => {
           const row = { label: tips[i] };
           series.forEach((s, k) => { row[`s${k}`] = s.values[i]; });

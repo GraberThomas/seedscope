@@ -1,3 +1,4 @@
+import datetime as dt
 import json
 import tempfile
 import threading
@@ -83,6 +84,43 @@ class ApiTest(unittest.TestCase):
         self.assertIsNone(data["up_30d_previous"])  # only 40 days of history
         self.assertEqual(data["ratio"], round((24 * 40 + 1) / 2000, 3))
 
+    def test_every_range_answers_with_series_buckets_and_stats(self):
+        expected = {
+            "1h": "min5", "6h": "min30", "24h": "hour", "3d": "hour6", "7d": "day",
+            "30d": "day", "90d": "week", "180d": "week", "1y": "month", "all": "month",
+        }
+        self.assertEqual(set(expected), set(queries.RANGES))
+        for range_key, kind in expected.items():
+            data = self.get(f"/api/timeseries?range={range_key}")
+            self.assertEqual(data["volume"]["kind"], kind, range_key)
+            self.assertTrue(data["ts"], range_key)
+            self.assertEqual(len(data["volume"]["keys"]), len(data["volume"]["up"]))
+            self.assertLessEqual(len(data["ts"]), 1500, range_key)
+            self.assertTrue(self.get(f"/api/breakdown?range={range_key}")["keys"], range_key)
+
+    def test_period_stats(self):
+        stats = self.get("/api/timeseries?range=7d")["stats"]
+        self.assertEqual(stats["up"], 7 * 24 * GIB)
+        self.assertEqual(stats["previous_up"], 7 * 24 * GIB)
+        self.assertEqual(stats["peak_up"], 1000)
+        self.assertIsNone(stats["ratio"])  # nothing downloaded over the period
+        long_stats = self.get("/api/timeseries?range=30d")["stats"]
+        self.assertGreaterEqual(long_stats["up"], 30 * 24 * GIB)
+        self.assertIsNone(long_stats["previous_up"])  # only 40 days of history
+        self.assertIsNone(self.get("/api/timeseries?range=all")["stats"]["previous_up"])
+
+    def test_week_buckets_add_up_to_daily_totals(self):
+        volume = self.get("/api/timeseries?range=90d")["volume"]
+        self.assertEqual(sum(volume["up"]), 24 * 40 * GIB)
+        self.assertEqual(dt.date.fromisoformat(volume["keys"][-1]).weekday(), 0)
+
+    def test_popularity(self):
+        data = self.get("/api/popularity")
+        self.assertEqual(data["wanted"], 3)
+        self.assertEqual(data["leechers"], 3)
+        self.assertEqual(data["lonely"], 0)
+        self.assertEqual({row["key"] for row in data["trackers"]}, {"tk.example.org", "other.example.net"})
+
     def test_timeseries_resolutions(self):
         self.assertEqual(self.get("/api/timeseries?range=30d")["resolution"], "hour")
         self.assertEqual(self.get("/api/timeseries?range=all")["resolution"], "day")
@@ -110,7 +148,13 @@ class ApiTest(unittest.TestCase):
     def test_torrents_sorting_and_filters(self):
         rows = self.get("/api/torrents?sort=uploaded")["rows"]
         self.assertEqual(rows[0]["hash"], HASH_A)
-        self.assertEqual(rows[0]["up_7d"], 3 * GIB)
+        self.assertEqual(rows[0]["up_period"], 3 * GIB)
+        self.assertEqual(rows[0]["spark"][-1], 3 * GIB)
+        self.assertEqual(len(rows[0]["spark"]), 30)
+        one_day = self.get("/api/torrents?sort=up_period&window=1")["rows"]
+        self.assertEqual(one_day[0]["up_period"], 3 * GIB)
+        self.assertEqual(self.get("/api/torrents?sort=popularity&known_swarm=1")["total"], 3)
+        self.assertEqual(self.status("/api/torrents?window=2"), 400)
         self.assertEqual(self.get("/api/torrents?tag=manuel")["total"], 1)
         self.assertEqual(self.get("/api/torrents?tag=manu")["total"], 0)
         self.assertEqual(self.get("/api/torrents?tracker=other.example.net")["total"], 1)
@@ -143,11 +187,31 @@ class ApiTest(unittest.TestCase):
     def test_torrent_detail(self):
         data = self.get(f"/api/torrent/{HASH_A}")
         self.assertEqual(data["torrent"]["hash"], HASH_A)
-        self.assertEqual(data["uploaded_total"][-1], 8 * GIB)
-        self.assertEqual(data["up"], [3 * GIB])
+        self.assertEqual(data["series"]["uploaded"], [5 * GIB, 8 * GIB])
+        self.assertEqual(data["series"]["seeders"], [5, 5])
+        self.assertEqual(data["series"]["popularity"], [0.5, 0.5])
+        self.assertEqual(sum(data["volume"]["up"]), 3 * GIB)
+        self.assertEqual(data["up_period"], 3 * GIB)
+        self.assertEqual(self.status(f"/api/torrent/{HASH_A}?range=x"), 400)
+        for range_key in queries.RANGES:
+            self.assertTrue(self.get(f"/api/torrent/{HASH_A}?range={range_key}")["volume"]["keys"])
         self.assertEqual([item["hash"] for item in data["siblings"]], [HASH_B])
         self.assertEqual(self.status("/api/torrent/" + "d" * 40), 404)
         self.assertEqual(self.status("/api/torrent/../../etc"), 400)
+
+    def test_idle_torrent_gets_a_flat_line_on_short_ranges(self):
+        # HASH_B did not change after its first sample, one hour before NOW.
+        with self.conn:
+            self.conn.execute(
+                "UPDATE torrents SET last_seen = ? WHERE hash = ?", (NOW, HASH_B)
+            )
+            self.conn.execute(
+                "DELETE FROM torrent_samples WHERE hash = ? AND ts = ?", (HASH_B, NOW)
+            )
+        series = queries.torrent_detail(self.conn, HASH_B, "1h", NOW)["series"]
+        self.assertEqual(len(series["ts"]), 2)
+        self.assertEqual(series["uploaded"], [GIB, GIB])
+        self.assertEqual(series["ts"][-1], NOW)
 
     def test_breakdown(self):
         data = self.get("/api/breakdown?by=tracker&range=7d")

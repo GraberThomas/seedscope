@@ -89,6 +89,8 @@ def make_handler(
             category=params.optional("category"),
             tag=params.optional("tag"),
             status=params.text("status", "active"),
+            window=params.integer("window", 7, 1, 365),
+            known_swarm=params.text("known_swarm") == "1",
             limit=params.integer("limit", 100, 1, 500),
             offset=params.integer("offset", 0, 0, 10_000_000),
         )
@@ -104,12 +106,16 @@ def make_handler(
             sort=params.text("sort", "efficiency"),
             descending=params.descending(),
             dead_days=params.integer("dead_days", 30, 1, 3650) if dead is not None else None,
+            window=params.integer("window", 30, 1, 365),
             limit=params.integer("limit", 100, 1, 500),
             offset=params.integer("offset", 0, 0, 10_000_000),
         )
 
     def api_breakdown(conn: sqlite3.Connection, params: Params, now: int) -> Any:
         return queries.breakdown(conn, params.text("by", "tracker"), params.text("range", "30d"), now)
+
+    def api_popularity(conn: sqlite3.Connection, params: Params, now: int) -> Any:
+        return queries.popularity(conn)
 
     routes: dict[str, Callable[[sqlite3.Connection, Params, int], Any]] = {
         "/api/summary": api_summary,
@@ -121,6 +127,7 @@ def make_handler(
         "/api/filters": api_filters,
         "/api/contents": api_contents,
         "/api/breakdown": api_breakdown,
+        "/api/popularity": api_popularity,
     }
 
     class Handler(BaseHTTPRequestHandler):
@@ -157,7 +164,7 @@ def make_handler(
                 elif path in routes:
                     self._api(lambda conn, now: routes[path](conn, Params(parts.query), now))
                 elif path.startswith("/api/torrent/"):
-                    self._torrent(path.removeprefix("/api/torrent/"))
+                    self._torrent(path.removeprefix("/api/torrent/"), Params(parts.query))
                 else:
                     self._json({"error": "Introuvable"}, HTTPStatus.NOT_FOUND)
             except queries.BadRequest as exc:
@@ -177,10 +184,12 @@ def make_handler(
             finally:
                 conn.close()
 
-        def _torrent(self, torrent_hash: str) -> None:
+        def _torrent(self, torrent_hash: str, params: Params) -> None:
             conn = db.connect_readonly(config.db_path)
             try:
-                detail = queries.torrent_detail(conn, torrent_hash, int(clock()))
+                detail = queries.torrent_detail(
+                    conn, torrent_hash, params.text("range", "30d"), int(clock())
+                )
             finally:
                 conn.close()
             if detail is None:

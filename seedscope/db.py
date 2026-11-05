@@ -83,6 +83,24 @@ MIGRATIONS = [
     ) WITHOUT ROWID;
     CREATE INDEX torrent_daily_day ON torrent_daily (day);
     """,
+    """
+    ALTER TABLE torrents ADD COLUMN popularity REAL NOT NULL DEFAULT 0;
+
+    -- tier: 0 = changed value, 1 = first poll of the hour, 2 = first poll of the day.
+    CREATE TABLE torrent_samples (
+        hash TEXT NOT NULL,
+        ts INTEGER NOT NULL,
+        tier INTEGER NOT NULL,
+        uploaded INTEGER NOT NULL,
+        downloaded INTEGER NOT NULL,
+        ratio REAL NOT NULL,
+        popularity REAL NOT NULL,
+        seeders INTEGER NOT NULL,
+        leechers INTEGER NOT NULL,
+        PRIMARY KEY (hash, ts)
+    ) WITHOUT ROWID;
+    CREATE INDEX torrent_samples_tier ON torrent_samples (tier, ts);
+    """,
 ]
 
 

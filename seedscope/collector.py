@@ -224,11 +224,17 @@ class Collector:
         known = {
             row["hash"]: row
             for row in self.conn.execute(
-                "SELECT hash, uploaded, downloaded, tracker_host, removed_at FROM torrents"
+                "SELECT hash, uploaded, downloaded, tracker_host, removed_at, num_complete, "
+                "num_incomplete FROM torrents"
             )
         }
         hour = now - now % 3600
         day = local_day(now)
+        tier = 0
+        if last_poll is None or last_poll // 3600 != now // 3600:
+            tier = 1
+        if last_poll is None or local_day(last_poll) != day:
+            tier = 2
         seen: set[str] = set()
         for torrent in torrents:
             torrent_hash = torrent["hash"]
@@ -252,14 +258,18 @@ class Collector:
                 host = previous["tracker_host"]  # blank until the tracker is contacted
             name = str(torrent.get("name") or "")
             size = int(torrent.get("size") or 0)
+            ratio = float(torrent.get("ratio") or 0)
+            popularity = float(torrent.get("popularity") or 0)
+            seeders = int(torrent.get("num_complete") or 0)
+            leechers = int(torrent.get("num_incomplete") or 0)
             self.conn.execute(
                 """
                 INSERT INTO torrents (
                     hash, name, tracker, tracker_host, category, tags, size, content_key,
                     added_on, completion_on, first_seen, last_seen, removed_at, uploaded,
                     downloaded, ratio, seeding_time, time_active, last_activity, state,
-                    num_complete, num_incomplete, progress
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    num_complete, num_incomplete, progress, popularity
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (hash) DO UPDATE SET
                     name = excluded.name,
                     tracker = excluded.tracker,
@@ -281,7 +291,8 @@ class Collector:
                     state = excluded.state,
                     num_complete = excluded.num_complete,
                     num_incomplete = excluded.num_incomplete,
-                    progress = excluded.progress
+                    progress = excluded.progress,
+                    popularity = excluded.popularity
                 """,
                 (
                     torrent_hash,
@@ -298,16 +309,32 @@ class Collector:
                     now,
                     uploaded,
                     downloaded,
-                    float(torrent.get("ratio") or 0),
+                    ratio,
                     int(torrent.get("seeding_time") or 0),
                     int(torrent.get("time_active") or 0),
                     int(torrent.get("last_activity") or 0),
                     str(torrent.get("state") or ""),
-                    int(torrent.get("num_complete") or 0),
-                    int(torrent.get("num_incomplete") or 0),
+                    seeders,
+                    leechers,
                     float(torrent.get("progress") or 0),
+                    popularity,
                 ),
             )
+            # Idle torrents are the vast majority: store them hourly, not every poll.
+            changed = (
+                previous is None
+                or previous["uploaded"] != uploaded
+                or previous["downloaded"] != downloaded
+                or previous["num_complete"] != seeders
+                or previous["num_incomplete"] != leechers
+            )
+            if tier or changed:
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO torrent_samples "
+                    "(hash, ts, tier, uploaded, downloaded, ratio, popularity, seeders, leechers) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (torrent_hash, now, tier, uploaded, downloaded, ratio, popularity, seeders, leechers),
+                )
             if up_delta or dl_delta:
                 for table, column, bucket in (
                     ("torrent_hourly", "hour", hour),
@@ -333,6 +360,14 @@ class Collector:
         with self.conn:
             self.conn.execute("DELETE FROM global_minute WHERE ts < ?", (minute_limit,))
             self.conn.execute("DELETE FROM torrent_hourly WHERE hour < ?", (hourly_limit,))
+            self.conn.execute(
+                "DELETE FROM torrent_samples WHERE tier = 0 AND ts < ?",
+                (now - self.config.sample_fine_retention_days * 86400,),
+            )
+            self.conn.execute(
+                "DELETE FROM torrent_samples WHERE tier = 1 AND ts < ?",
+                (now - self.config.sample_hourly_retention_days * 86400,),
+            )
         self._last_prune = now
 
     def tick(self, now: int, include_torrents: bool) -> None:

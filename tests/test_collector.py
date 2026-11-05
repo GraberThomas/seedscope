@@ -144,6 +144,54 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(row["up_speed_max"], 30)
         self.assertEqual(row["alltime_ul"], 1600)
 
+    def samples(self):
+        return [
+            tuple(row)
+            for row in self.conn.execute("SELECT ts, tier, uploaded FROM torrent_samples ORDER BY ts")
+        ]
+
+    def test_idle_torrents_are_sampled_hourly_not_at_every_poll(self):
+        base = 3600 * 24 * 100
+        self.ingest([torrent(uploaded=10)], base)  # first poll
+        self.ingest([torrent(uploaded=10)], base + 300)  # unchanged: nothing stored
+        self.ingest([torrent(uploaded=20)], base + 600)  # changed: fine sample
+        self.ingest([torrent(uploaded=20)], base + 3600)  # new hour
+        self.ingest([torrent(uploaded=20)], base + 86400)  # new day
+        self.assertEqual(
+            self.samples(),
+            [
+                (base, 2, 10),
+                (base + 600, 0, 20),
+                (base + 3600, 1, 20),
+                (base + 86400, 2, 20),
+            ],
+        )
+
+    def test_swarm_changes_create_a_sample_and_popularity_is_stored(self):
+        base = 3600 * 24 * 100
+        self.ingest([torrent(num_incomplete=1)], base)
+        self.ingest([torrent(num_incomplete=4, popularity=1.25)], base + 300)
+        row = self.conn.execute(
+            "SELECT leechers, popularity FROM torrent_samples WHERE ts = ?", (base + 300,)
+        ).fetchone()
+        self.assertEqual(tuple(row), (4, 1.25))
+        current = self.conn.execute("SELECT popularity FROM torrents").fetchone()[0]
+        self.assertEqual(current, 1.25)
+
+    def test_prune_thins_samples_by_tier(self):
+        now = 1000 * 86400
+        for age_days, tier in ((31, 0), (29, 0), (181, 1), (179, 1), (900, 2)):
+            self.conn.execute(
+                "INSERT INTO torrent_samples VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0)",
+                (HASH_A, now - age_days * 86400, tier),
+            )
+        self.collector.prune(now)
+        ages = sorted(
+            (now - row[0]) // 86400
+            for row in self.conn.execute("SELECT ts FROM torrent_samples")
+        )
+        self.assertEqual(ages, [29, 179, 900])
+
     def test_tick_collects_everything_and_prune_respects_retention(self):
         self.client.state = {
             "alltime_ul": 100,
@@ -154,15 +202,15 @@ class CollectorTest(unittest.TestCase):
         }
         self.client.list = [torrent()]
         self.client.active = [torrent(upspeed=500), torrent(HASH_B, upspeed=900)]
-        now = 90 * 86400
+        now = 400 * 86400
         self.conn.execute(
             "INSERT INTO global_minute (ts, up_speed, dl_speed, alltime_ul, alltime_dl) "
             "VALUES (?, 0, 0, 0, 0)",
-            (now - 31 * 86400,),
+            (now - 91 * 86400,),
         )
         self.conn.execute(
             "INSERT INTO torrent_hourly (hash, hour, up, dl) VALUES (?, ?, 1, 1)",
-            (HASH_A, now - 91 * 86400),
+            (HASH_A, now - 366 * 86400),
         )
         self.collector.tick(now, include_torrents=True)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM global_minute").fetchone()[0], 1)

@@ -37,6 +37,7 @@ def torrent(torrent_hash: str = HASH_A, **overrides: object) -> dict[str, object
         "num_complete": 5,
         "num_incomplete": 1,
         "progress": 1.0,
+        "popularity": 0.5,
     }
     base.update(overrides)
     return base

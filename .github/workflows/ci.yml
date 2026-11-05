@@ -24,5 +24,7 @@ jobs:
             cp "$file" "/tmp/$(basename "$file" .js).mjs"
             node --check "/tmp/$(basename "$file" .js).mjs"
           done
+      - name: Tests JavaScript
+        run: node --test tests/table_sort.test.mjs
       - name: Image Docker
         run: docker build -t seedscope:ci .

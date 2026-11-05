@@ -1,44 +1,86 @@
 # SeedScope
 
-Statistiques de qBittorrent sur la durée : ratio, courbes, trackers et rentabilité du stockage.
-Une alternative légère à une pile Prometheus + Grafana, conçue pour un NAS : un seul conteneur,
-aucune dépendance Python, environ 20 Mio de RAM.
+**Les statistiques de qBittorrent sur la durée : ratio, courbes, contenus, trackers et rentabilité du stockage.**
 
-![Page d'aperçu, sur des données fictives](docs/apercu.png)
+SeedScope remplace une pile Prometheus + Grafana par un seul conteneur, pensé pour un NAS : environ 20 Mio de RAM,
+aucune dépendance Python et une interface prête à l'emploi. Il suit chaque cross-seed séparément, puis les additionne
+par contenu. Il se contente de lire qBittorrent et n'y modifie jamais rien.
+
+![Page d'aperçu : ratio, débits en cours, stats de la période et courbes](docs/apercu.png)
+
+<p align="center">
+  <img src="docs/mobile-apercu.png" width="270" alt="Aperçu sur mobile">
+  &nbsp;&nbsp;
+  <img src="docs/mobile-courbes.png" width="270" alt="Courbes sur mobile">
+</p>
+
+<p align="center"><em>Toutes les captures utilisent les données fictives du mode démo.</em></p>
+
+## Sommaire
+
+- [Fonctionnalités](#fonctionnalités)
+- [Captures](#captures)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Sauvegarde et mise à jour](#sauvegarde-et-mise-à-jour)
+- [Intégrations](#intégrations)
+- [Lire les chiffres](#lire-les-chiffres)
+- [Sécurité](#sécurité)
+- [Fonctionnement](#fonctionnement)
+- [Développement](#développement)
 
 ## Fonctionnalités
 
-- **Aperçu** : ratio global, envoi et réception en cours (aussi en haut de chaque page), débits, volume envoyé, upload cumulé et évolution du ratio, avec les totaux,
-  le débit moyen et le pic de la période. Dix durées : 1 h, 6 h, 24 h, 3 j, 7 j, 30 j, 90 j, 6 mois, 1 an, tout.
-- **Courbes à plusieurs séries** : un clic sur la légende masque ou réaffiche l'envoi, la réception ou un tracker,
-  et l'échelle s'adapte. Ce choix est mémorisé dans le navigateur.
-- **Activité** : transferts en cours, filtrés par sens (envoi ou réception), avec progression et temps restant, calendrier annuel de l'upload, heures les plus actives.
-- **Contenus** : statistiques par contenu, tous trackers confondus, avec recherche, filtres et mini-courbe.
-- **Page par contenu** : upload par tracker, envoyé / taille, popularité, seeders, leechers et liste de ses torrents.
-- **Torrents** : tableau triable et filtrable avec mini-courbe sur 30 jours, torrents supprimés inclus.
-- **Page par torrent** : courbes d'upload, de ratio, de popularité, de seeders et de leechers.
-- **Popularité** : les plus populaires, les plus demandés et les moins seedés, par contenu ou par torrent.
-- **Trackers et catégories** : upload dans le temps, part de chacun, volume et ratio.
-- **Rentabilité** : upload rapporté à l'espace occupé, et poids morts à partir d'un seuil d'inactivité.
-- **Paramètres** : fréquences de collecte, modifiables sans redémarrage.
+| Page | Ce qu'on y trouve |
+|---|---|
+| **Aperçu** | Ratio global, envoi et réception en cours, totaux, débit moyen et pic de la période, courbes de débit et de ratio, upload cumulé, contenus qui ont le plus envoyé |
+| **Activité** | Transferts en cours, filtrés par sens, avec progression et temps restant ; calendrier annuel de l'upload ; heures les plus actives |
+| **Contenus** | Stats tous trackers confondus, recherche, filtres, tri et mini-courbe sur 30 jours ; une page par contenu avec ses courbes par tracker |
+| **Torrents** | Même tableau par torrent, supprimés inclus ; une page par torrent avec upload, ratio, popularité, seeders et leechers |
+| **Popularité** | Les plus populaires, les plus demandés et les moins seedés, par contenu ou par torrent ; moyenne par tracker |
+| **Trackers** | Upload dans le temps, part de chacun, volume et ratio, par tracker ou par catégorie |
+| **Rentabilité** | Upload rapporté à l'espace occupé, et poids morts selon un seuil d'inactivité. SeedScope suggère, mais ne supprime rien |
+| **Paramètres** | Fréquences de collecte, modifiables sans redémarrage |
+
+Sur toutes les pages :
+
+- **Dix durées** : 1 h, 6 h, 24 h, 3 j, 7 j, 30 j, 90 j, 6 mois, 1 an ou tout l'historique.
+- **Courbes à la carte** : un clic sur la légende masque l'envoi, la réception ou un tracker, et l'échelle s'adapte.
 - **Bouton Actualiser** : lance tout de suite une collecte complète.
+- **Thème clair ou sombre**, interface adaptée au mobile, navigation au clavier, et un tableau pour chaque graphique.
 
-Les cross-seeds sont suivis séparément, par hash, puis additionnés par contenu : supprimer un seul d'entre eux
-ne libère aucun espace, et c'est le contenu entier qui occupe le disque.
+## Captures
 
-SeedScope **lit** qBittorrent et ne modifie jamais rien : son client n'envoie aucune autre requête
-d'écriture que la connexion.
+**Page d'un contenu** : upload par tracker, envoyé / taille, popularité, seeders et leechers.
+
+![Page d'un contenu](docs/contenu.png)
+
+**Contenus** : tous tes contenus, avec leurs trackers et une mini-courbe sur 30 jours.
+
+![Liste des contenus](docs/contenus.png)
+
+**Activité, en thème sombre** : transferts en cours et calendrier de l'upload.
+
+![Page Activité en thème sombre](docs/activite-sombre.png)
 
 ## Installation
 
+Il faut Docker avec Compose, et l'interface web de qBittorrent activée.
+
 ```sh
+git clone https://github.com/GraberThomas/seedscope.git
+cd seedscope
 cp .env.example .env
 chmod 600 .env
-# renseigner .env
+# renseigner .env, puis :
 docker compose up -d --build
 ```
 
-L'interface répond sur `http://<ip-du-serveur>:3310/`.
+L'interface répond sur `http://<ip-du-serveur>:3310/`. Les premières données arrivent en moins d'une minute.
+
+## Configuration
+
+### Fichier `.env`
 
 | Variable | Rôle | Défaut |
 |---|---|---|
@@ -46,23 +88,69 @@ L'interface répond sur `http://<ip-du-serveur>:3310/`.
 | `QBT_USERNAME`, `QBT_PASSWORD` | Identifiants de qBittorrent | requis |
 | `SEEDSCOPE_LAN_IP` | Adresse locale sur laquelle publier l'interface | requis |
 | `SEEDSCOPE_PORT` | Port publié | `3310` |
-| `SEEDSCOPE_TRACKER_ALIASES` | Regroupe des hôtes : `hote1=Nom,hote2=Nom` | vide |
-| `SEEDSCOPE_GLOBAL_INTERVAL` | Collecte des compteurs globaux, en secondes, tant que la page Paramètres n'a rien enregistré | `60` |
-| `SEEDSCOPE_TORRENT_INTERVAL` | Collecte par torrent, en secondes, tant que la page Paramètres n'a rien enregistré | `300` |
-| `SEEDSCOPE_MINUTE_RETENTION_DAYS` | Conservation des mesures globales à la minute | `90` |
-| `SEEDSCOPE_HOURLY_RETENTION_DAYS` | Conservation de l'upload horaire par torrent | `365` |
-| `SEEDSCOPE_SAMPLE_FINE_RETENTION_DAYS` | Courbes par torrent, mesures toutes les 5 min | `30` |
-| `SEEDSCOPE_SAMPLE_HOURLY_RETENTION_DAYS` | Courbes par torrent, mesures horaires | `180` |
+| `SEEDSCOPE_TRACKER_ALIASES` | Regroupe plusieurs hôtes d'un tracker : `hote1=Nom,hote2=Nom` | vide |
 | `TZ` | Fuseau utilisé pour découper les jours | `Europe/Paris` |
 
-Les variables d'intervalle et de conservation ne sont pas transmises par `compose.yaml` : ajoutez-les à sa
-section `environment` pour les modifier.
+Les passkeys ne servent à rien ici : donnez seulement les noms d'hôtes aux alias.
+
+### Fréquences de collecte
+
+Elles se règlent dans la page **Paramètres** et s'appliquent immédiatement.
+
+| Données | Défaut | Choix |
+|---|---|---|
+| Stats globales et transferts en cours | 1 min | 30 s, 1, 2 ou 5 min |
+| Détail par torrent | 5 min | 1, 5, 10, 15, 30 min ou 1 h |
+
+### Options avancées
+
+Ces variables ne sont pas transmises par `compose.yaml` : ajoutez-les à sa section `environment` pour les modifier.
+
+| Variable | Rôle | Défaut |
+|---|---|---|
+| `SEEDSCOPE_GLOBAL_INTERVAL` | Fréquence globale en secondes, tant que la page Paramètres n'a rien enregistré | `60` |
+| `SEEDSCOPE_TORRENT_INTERVAL` | Fréquence par torrent en secondes, tant que la page Paramètres n'a rien enregistré | `300` |
+| `SEEDSCOPE_MINUTE_RETENTION_DAYS` | Conservation des stats globales à la minute | `90` |
+| `SEEDSCOPE_HOURLY_RETENTION_DAYS` | Conservation de l'upload horaire par torrent | `365` |
+| `SEEDSCOPE_SAMPLE_FINE_RETENTION_DAYS` | Courbes par torrent, mesures fines | `30` |
+| `SEEDSCOPE_SAMPLE_HOURLY_RETENTION_DAYS` | Courbes par torrent, mesures horaires | `180` |
+
+## Sauvegarde et mise à jour
+
+> [!IMPORTANT]
+> L'historique n'existe que dans la base SQLite, et SeedScope ne la sauvegarde pas lui-même. Pensez à en garder une copie.
+
+**Sauvegarder**, sans arrêter le service :
+
+```sh
+docker exec seedscope python -c "import sqlite3; sqlite3.connect('/data/seedscope.db').execute(\"VACUUM INTO '/data/backup.db'\")"
+docker cp seedscope:/data/backup.db ./seedscope-backup.db
+docker exec seedscope rm /data/backup.db
+```
+
+**Restaurer** :
+
+```sh
+docker compose stop seedscope
+docker run --rm -v seedscope_seedscope-data:/data -v "$PWD/seedscope-backup.db:/backup.db:ro" alpine \
+  sh -c 'rm -f /data/seedscope.db-wal /data/seedscope.db-shm; cp /backup.db /data/seedscope.db; chown -R 10001:10001 /data'
+docker compose start seedscope
+```
+
+**Mettre à jour** : la base est migrée automatiquement au démarrage.
+
+```sh
+git pull
+docker compose up -d --build
+```
+
+## Intégrations
 
 ### Reprendre l'historique de Prometheus
 
-Avec [qbittorrent-exporter](https://github.com/martabal/qbittorrent-exporter), l'historique global peut être
-importé une seule fois. Les séries par torrent sont ignorées, car l'exporter les identifie par nom et confond
-donc les cross-seeds.
+Si vous utilisez [qbittorrent-exporter](https://github.com/martabal/qbittorrent-exporter), l'historique global peut être
+importé une seule fois, avant de supprimer Prometheus. Les séries par torrent sont ignorées, car l'exporter les
+identifie par nom et confond donc les cross-seeds.
 
 ```sh
 docker run --rm --network <reseau-de-prometheus> -v seedscope_seedscope-data:/data \
@@ -84,44 +172,78 @@ docker run --rm --network <reseau-de-prometheus> -v seedscope_seedscope-data:/da
         - { field: up_7d, label: 7 jours, format: bytes }
 ```
 
+### API JSON
+
+| Route | Contenu |
+|---|---|
+| `GET /api/summary` | Ratio, débits et totaux du moment |
+| `GET /api/timeseries?range=7d` | Courbes globales, volumes et stats de la période |
+| `GET /api/contents`, `/api/contents/summary`, `/api/contents/top` | Contenus, résumé et classement |
+| `GET /api/content?key=…&range=30d` | Détail d'un contenu |
+| `GET /api/torrents`, `/api/torrent/<hash>?range=30d` | Torrents et détail d'un torrent |
+| `GET /api/live` | Transferts en cours |
+| `GET /api/breakdown?by=tracker&range=30d` | Répartition par tracker ou par catégorie |
+| `GET /api/popularity`, `/api/calendar`, `/api/heatmap`, `/api/filters` | Vues spécialisées |
+| `GET` ou `POST /api/settings` | Lire ou modifier les fréquences de collecte |
+| `POST /api/collect` | Demander une collecte immédiate |
+| `GET /healthz` | État du service |
+
 ## Lire les chiffres
 
-- **Historique** : les courbes partent du début de la collecte. Avant cela, seuls les totaux de qBittorrent
-  existent : ils servent de point de départ sans créer de faux pic.
-- **Popularité** : c'est la valeur de qBittorrent, soit le ratio divisé par le nombre de mois actifs. Elle mesure ce
-  qui a tourné pour vous, pas la demande actuelle, que les leechers annoncés reflètent mieux.
-- **Courbes par torrent** : elles partent de la version 0.2. Une mesure est prise quand quelque chose change, et au
-  moins une fois par heure. Les vues longues se contentent des mesures horaires, puis quotidiennes.
+- **Historique** : les courbes partent du début de la collecte. Les totaux antérieurs de qBittorrent servent de point
+  de départ, sans créer de faux pic.
 - **Ratio** : c'est celui de qBittorrent. Il peut différer de celui affiché par les trackers.
-- **Contenus** : les torrents sont regroupés par taille exacte en octets, ce qui peut rarement réunir deux contenus
-  différents de même taille. Un épisode et le pack de saison qui le contient restent deux contenus, donc le volume
-  seedé est une estimation haute.
-- **Inactivité** : basée sur la dernière activité vue par qBittorrent. Un contenu n'est considéré inactif que si
-  tous ses torrents le sont et qu'il est lui-même plus ancien que le seuil.
-- **Coupures** : l'upload transféré pendant un arrêt de SeedScope est compté à la reprise, sur l'heure en cours.
+- **Popularité** : c'est la valeur de qBittorrent, soit le ratio divisé par le nombre de mois actifs. Elle mesure ce qui a
+  tourné pour vous. Les leechers annoncés reflètent mieux la demande actuelle.
+- **Contenus** : les torrents d'au moins 50 Mio sont regroupés par taille exacte en octets, ce qui peut rarement réunir
+  deux contenus différents. Un épisode et le pack de saison qui le contient restent deux contenus, donc le volume seedé
+  est une estimation haute.
+- **Inactivité** : basée sur la dernière activité vue par qBittorrent. Un contenu n'est inactif que si tous ses torrents
+  le sont et qu'il est lui-même plus ancien que le seuil.
+- **Débits en cours** : ils datent de la dernière collecte, et non de l'instant présent.
+- **Pic et courbes** : le pic vient des mesures les plus fines, alors que les courbes longues affichent des moyennes.
+  Il peut donc dépasser le haut de la courbe.
+- **Coupures** : l'upload transféré pendant un arrêt de SeedScope est compté à la reprise.
 
 ## Sécurité
 
-- L'interface n'a **pas d'authentification** : toute personne qui y accède voit les stats, peut changer les
-  fréquences de collecte et lancer une collecte (une toutes les 10 secondes au plus). Publiez-la uniquement sur un réseau de confiance, jamais sur Internet.
-- Seules des valeurs prédéfinies sont acceptées, et les requêtes venant d'un autre site sont refusées.
-- Les URL d'annonce contiennent votre passkey : seul le nom d'hôte du tracker est conservé.
-- Le conteneur est en lecture seule, sans capacité Linux, et les noms de torrents ne sont jamais interprétés comme
-  du HTML (`textContent` et Content-Security-Policy stricte).
-- Après un refus d'identifiants, SeedScope attend 30 minutes avant de réessayer, pour ne pas déclencher le
-  bannissement d'IP de qBittorrent.
+> [!WARNING]
+> L'interface n'a **pas d'authentification**. Toute personne qui y accède voit les stats et les noms de torrents, peut
+> changer les fréquences de collecte et lancer une collecte. Publiez-la uniquement sur un réseau de confiance, jamais sur
+> Internet.
 
-## Architecture
+- **qBittorrent** : le client n'envoie aucune autre requête d'écriture que la connexion.
+- **Passkeys** : les URL d'annonce en contiennent une, donc seul le nom d'hôte du tracker est conservé.
+- **Écritures** : seules des valeurs prédéfinies sont acceptées, les requêtes venant d'un autre site sont refusées, et une
+  collecte manuelle au plus est possible toutes les 10 secondes.
+- **Conteneur** : système de fichiers en lecture seule, utilisateur non root et aucune capacité Linux.
+- **Noms de torrents** : ils ne sont jamais interprétés comme du HTML (`textContent` et Content-Security-Policy stricte).
+- **Identifiants refusés** : SeedScope attend 30 minutes avant de réessayer, pour ne pas déclencher le bannissement d'IP
+  de qBittorrent.
+
+## Fonctionnement
+
+```mermaid
+flowchart LR
+    Q[qBittorrent] -- lecture seule --> C[Collecteur]
+    C --> D[(SQLite)]
+    D --> W[Serveur web]
+    W --> I[Interface]
+    W --> A[API JSON]
+```
 
 | Fichier | Rôle |
 |---|---|
 | `seedscope/qbit.py` | Client de l'API qBittorrent, en lecture seule |
 | `seedscope/collector.py` | Boucle de collecte, calcul des écarts, agrégats et purge |
 | `seedscope/db.py` | Schéma SQLite et migrations |
+| `seedscope/settings.py` | Réglages modifiables depuis l'interface |
 | `seedscope/queries.py` | Requêtes de l'API |
 | `seedscope/web.py` | Serveur HTTP, statique et JSON |
 | `seedscope/static/` | Interface, sans framework ni dépendance |
 | `seedscope/backfill.py` | Import unique depuis Prometheus |
+
+Les données anciennes sont allégées pour que la base reste petite :
 
 | Table | Contenu | Conservation |
 |---|---|---|
@@ -129,14 +251,19 @@ docker run --rm --network <reseau-de-prometheus> -v seedscope_seedscope-data:/da
 | `global_hourly` | Agrégats globaux par heure | Illimitée |
 | `torrent_hourly` | Upload et download par torrent et par heure | 1 an |
 | `torrent_daily` | Upload et download par torrent et par jour | Illimitée |
-| `torrent_samples` | Upload, ratio, popularité et pairs par torrent | 30 jours à 5 min, 6 mois à l'heure, puis un point par jour |
+| `torrent_samples` | Upload, ratio, popularité et pairs par torrent | Mesures fines 30 jours, horaires 6 mois, puis une par jour |
 | `torrents` | Dernier état de chaque torrent, supprimés inclus | Illimitée |
 
+Une mesure par torrent n'est enregistrée que si une valeur a changé, et au moins une fois par heure.
+
 ## Développement
+
+Python 3.13 et sa bibliothèque standard suffisent.
 
 ```sh
 python -m unittest discover -s tests -t .   # tests
 python scripts/demo.py                      # interface sur données fictives, http://127.0.0.1:8080
 ```
 
-Python 3.13 et sa bibliothèque standard suffisent.
+La CI lance les tests, vérifie la syntaxe JavaScript et construit l'image Docker à chaque push sur `main` et à chaque
+pull request.

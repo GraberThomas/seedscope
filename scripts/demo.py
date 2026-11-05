@@ -82,7 +82,7 @@ def seed(conn, config: Config, now: int, rng: random.Random) -> list[dict]:
         previous = (uploaded, downloaded)
         if ts % (3600 * 24) == 0:
             conn.commit()
-        if now - ts <= DAY:
+        if now - ts <= 7 * DAY:
             for minute in range(1, 60):
                 inner = ts + minute * 60
                 if inner < now:
@@ -103,6 +103,29 @@ def seed(conn, config: Config, now: int, rng: random.Random) -> list[dict]:
             if share and torrent["added_on"] <= ts:
                 torrent["uploaded"] += share
                 torrent["last_activity"] = ts
+            if torrent["added_on"] <= ts:
+                torrent["seeders"] = max(1, torrent.get("seeders", torrent["num_complete"]) + rng.randint(-1, 1))
+                torrent["leechers"] = max(0, torrent.get("leechers", torrent["num_incomplete"]) + rng.randint(-1, 1))
+                age_months = max(0.1, (ts - torrent["added_on"]) / (30 * DAY))
+                torrent["popularity"] = torrent["uploaded"] / torrent["size"] / age_months
+                # One sample per day, one per hour for the last three days: like real retention.
+                for offset in range(0, DAY, 3600 if now - ts <= 3 * DAY else DAY):
+                    if ts + offset < now:
+                        conn.execute(
+                            "INSERT OR REPLACE INTO torrent_samples VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (
+                                torrent["hash"],
+                                ts + offset,
+                                2 if offset == 0 else 1,
+                                torrent["uploaded"],
+                                torrent["downloaded"],
+                                torrent["uploaded"] / torrent["size"],
+                                torrent["popularity"],
+                                torrent["seeders"],
+                                torrent["leechers"],
+                            ),
+                        )
+            if share and torrent["added_on"] <= ts:
                 conn.execute(
                     "INSERT OR REPLACE INTO torrent_daily (hash, day, up, dl) VALUES (?, ?, ?, 0)",
                     (torrent["hash"], day, share),
@@ -114,11 +137,16 @@ def seed(conn, config: Config, now: int, rng: random.Random) -> list[dict]:
                     )
     for torrent in torrents:
         conn.execute(
-            "UPDATE torrents SET uploaded = ?, last_activity = ?, ratio = ? WHERE hash = ?",
+            "UPDATE torrents SET uploaded = ?, last_activity = ?, ratio = ?, popularity = ?, "
+            "num_complete = ?, num_incomplete = ?, last_seen = ? WHERE hash = ?",
             (
                 torrent["uploaded"],
                 torrent["last_activity"] or torrent["added_on"],
                 torrent["uploaded"] / torrent["size"],
+                torrent.get("popularity", 0.0),
+                torrent.get("seeders", torrent["num_complete"]),
+                torrent.get("leechers", torrent["num_incomplete"]),
+                now,
                 torrent["hash"],
             ),
         )

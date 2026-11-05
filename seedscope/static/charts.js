@@ -87,6 +87,7 @@ export function ticks(min, max, binary, count = 4) {
 function timeLabel(ts, span) {
   const date = new Date(ts * 1000);
   if (span <= 2 * 86400) return date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  if (span <= 7 * 86400) return `${date.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })} ${date.getHours()} h`;
   if (span <= 120 * 86400) return date.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
   return date.toLocaleDateString('fr-FR', { month: 'short', year: '2-digit' });
 }
@@ -118,7 +119,7 @@ function emptyState(message) {
 }
 
 // ---- Line chart with a crosshair that snaps to the nearest position ----
-export function lineChart({ ts, series, format, axisFormat, binary = false, zero = true, area = false, height = 240, empty, ariaLabel }) {
+export function lineChart({ ts, series, format, axisFormat, binary = false, zero = true, area = false, height = 240, empty, ariaLabel, connectGaps = false }) {
   const points = ts.length;
   const usable = series.some((s) => s.values.filter((v) => v !== null).length >= 2);
   if (!usable) return emptyState(empty);
@@ -137,9 +138,14 @@ export function lineChart({ ts, series, format, axisFormat, binary = false, zero
   const yTicks = ticks(min, max, binary);
   const yMin = zero ? 0 : yTicks[0];
   const yMax = yTicks[yTicks.length - 1];
+  // Without a dedicated formatter, ticks get just enough decimals to stay distinct.
+  const tickStep = yTicks.length > 1 ? yTicks[1] - yTicks[0] : 1;
+  const tickDigits = Math.max(0, Math.ceil(-Math.log10(tickStep) - 1e-9));
+  const axisText = axisFormat || ((value) => value.toLocaleString('fr-FR', { minimumFractionDigits: tickDigits, maximumFractionDigits: tickDigits }));
   const span = ts[points - 1] - ts[0] || 1;
   const gaps = ts.slice(1).map((t, i) => t - ts[i]).sort((a, b) => a - b);
-  const breakAfter = (gaps[Math.floor(gaps.length / 2)] || 60) * 5;
+  // Sparse series (samples stored on change) are drawn as one continuous line.
+  const breakAfter = connectGaps ? Infinity : (gaps[Math.floor(gaps.length / 2)] || 60) * 5;
 
   observeWidth(box, (width) => {
     const margin = { top: 16, right: series.length === 1 ? 76 : 14, bottom: 26, left: 70 };
@@ -154,7 +160,7 @@ export function lineChart({ ts, series, format, axisFormat, binary = false, zero
     });
     for (const tick of yTicks) {
       svg('line', { x1: margin.left, x2: margin.left + plotW, y1: y(tick), y2: y(tick), stroke: tick === yMin ? 'var(--axis)' : 'var(--grid)' }, root);
-      svg('text', { x: margin.left - 8, y: y(tick) + 4, 'text-anchor': 'end', class: 'axis-label', text: (axisFormat || format)(tick) }, root);
+      svg('text', { x: margin.left - 8, y: y(tick) + 4, 'text-anchor': 'end', class: 'axis-label', text: axisText(tick) }, root);
     }
     const xCount = Math.max(2, Math.min(6, Math.floor(plotW / 110)));
     for (let i = 0; i <= xCount; i += 1) {
@@ -449,9 +455,26 @@ export function heatmapChart({ cells, format, weekdays, empty }) {
   return wrap;
 }
 
+// ---- Sparkline: daily columns for a table row, the row's numbers carry the values ----
+export function sparkline(values) {
+  const peak = Math.max(0, ...values);
+  const width = 90;
+  const height = 22;
+  const root = svg('svg', { width, height, viewBox: `0 0 ${width} ${height}`, class: 'spark', 'aria-hidden': 'true' });
+  svg('line', { x1: 0, x2: width, y1: height - 0.5, y2: height - 0.5, stroke: 'var(--axis)' }, root);
+  if (peak === 0) return root;
+  const band = width / values.length;
+  values.forEach((value, i) => {
+    if (value <= 0) return;
+    const barHeight = Math.max(2, (value / peak) * (height - 2));
+    svg('rect', { x: i * band, y: height - barHeight, width: Math.max(1, band - 1), height: barHeight, fill: 'var(--series-1)' }, root);
+  });
+  return root;
+}
+
 // ---- Ranked horizontal bars: same baseline, largest first ----
 export function rankedBars(rows, format, colorOf) {
-  const peak = Math.max(1, ...rows.map((row) => row.value));
+  const peak = Math.max(0, ...rows.map((row) => row.value)) || 1;
   return h('div', { class: 'ranked' }, rows.flatMap((row) => {
     const fill = h('div', { class: 'fill' });
     fill.style.width = `${(row.value / peak) * 100}%`;

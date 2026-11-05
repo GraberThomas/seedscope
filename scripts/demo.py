@@ -88,8 +88,10 @@ def seed(conn, config: Config, now: int, rng: random.Random) -> list[dict]:
                 inner = ts + minute * 60
                 if inner < now:
                     conn.execute(
-                        "INSERT OR REPLACE INTO global_minute VALUES (?, ?, ?, ?, ?, 20, 0)",
-                        (inner, int(bytes_up / 3600 * rng.uniform(0.3, 1.7)), bytes_down // 3600, uploaded, downloaded),
+                        "INSERT OR REPLACE INTO global_minute "
+                        "(ts, up_speed, dl_speed, alltime_ul, alltime_dl, peers, free_space, payload_ul) "
+                        "VALUES (?, ?, ?, ?, ?, 20, 0, ?)",
+                        (inner, int(bytes_up / 3600 * rng.uniform(0.3, 1.7)), bytes_down // 3600, uploaded, downloaded, uploaded),
                     )
     conn.commit()
 

@@ -1,4 +1,5 @@
 import itertools
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -176,6 +177,65 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(row["samples"], 2)
         self.assertEqual(row["up_speed_max"], 30)
         self.assertEqual(row["alltime_ul"], 1600)
+
+    def poll(self, now, alltime_ul, alltime_dl, torrents):
+        self.client.state = {"alltime_ul": alltime_ul, "alltime_dl": alltime_dl}
+        self.client.list = torrents
+        self.collector.tick(now, include_torrents=True)
+
+    def hour_and_period(self, hour):
+        up = self.conn.execute(
+            "SELECT up_bytes FROM global_hourly WHERE hour = ?", (hour,)
+        ).fetchone()[0]
+        rows = self.conn.execute("SELECT payload_ul FROM global_minute ORDER BY ts").fetchall()
+        return up, rows[-1][0] - rows[0][0]
+
+    def test_network_overhead_of_a_download_is_not_upload(self):
+        hour = 7200
+        self.poll(hour, 1000, 0, [torrent(HASH_A, uploaded=500, downloaded=0, added_on=1)])
+        self.poll(hour + 60, 4000, 90_000, [torrent(HASH_A, uploaded=500, downloaded=90_000, added_on=1)])
+        self.poll(hour + 120, 7000, 180_000, [torrent(HASH_A, uploaded=500, downloaded=180_000, added_on=1)])
+        self.assertEqual(self.hour_and_period(hour), (0, 0))
+        latest = self.conn.execute(
+            "SELECT alltime_ul FROM global_minute ORDER BY ts DESC LIMIT 1"
+        ).fetchone()[0]
+        self.assertEqual(latest, 7000)  # the raw qBittorrent counter stays available
+
+    def test_upload_stays_counted_after_the_torrent_is_removed(self):
+        hour = 7200
+        self.poll(hour, 0, 0, [torrent(HASH_A, uploaded=100, added_on=1), torrent(HASH_B, uploaded=50, added_on=1)])
+        self.poll(hour + 60, 0, 0, [torrent(HASH_A, uploaded=400, added_on=1), torrent(HASH_B, uploaded=50, added_on=1)])
+        self.poll(hour + 120, 0, 0, [torrent(HASH_B, uploaded=50, added_on=1)])
+        self.poll(hour + 180, 0, 0, [torrent(HASH_B, uploaded=80, added_on=1)])
+        self.assertEqual(self.hour_and_period(hour)[0], 330)
+        total = int(db.get_meta(self.conn, "payload_ul"))
+        self.assertEqual(total, 330)
+        removed = self.conn.execute(
+            "SELECT removed_at, uploaded FROM torrents WHERE hash = ?", (HASH_A,)
+        ).fetchone()
+        self.assertEqual(tuple(removed), (hour + 120, 400))
+        kept = self.conn.execute(
+            "SELECT SUM(up) FROM torrent_hourly WHERE hash = ?", (HASH_A,)
+        ).fetchone()[0]
+        self.assertEqual(kept, 300)
+
+    def test_migration_keeps_history_and_continues_from_the_last_counter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "old.db")
+            old = sqlite3.connect(path)
+            old.executescript("".join(db.MIGRATIONS[:2]))
+            old.execute("PRAGMA user_version = 2")
+            old.execute(
+                "INSERT INTO global_minute (ts, up_speed, dl_speed, alltime_ul, alltime_dl) "
+                "VALUES (60, 0, 0, 1000, 5), (120, 0, 0, 1600, 5)"
+            )
+            old.commit()
+            old.close()
+            conn = db.connect(path)
+            self.addCleanup(conn.close)
+            rows = conn.execute("SELECT alltime_ul, payload_ul FROM global_minute ORDER BY ts").fetchall()
+            self.assertEqual([tuple(row) for row in rows], [(1000, 1000), (1600, 1600)])
+            self.assertEqual(db.get_meta(conn, "payload_ul"), "1600")
 
     def samples(self):
         return [

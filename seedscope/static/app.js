@@ -1114,20 +1114,10 @@ function initRefresh() {
   });
 }
 
-function isDark() {
-  const theme = document.documentElement.dataset.theme;
-  return (theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')) === 'dark';
-}
-
-function syncThemeButton() {
-  document.getElementById('theme').textContent = isDark() ? 'Thème clair' : 'Thème sombre';
-}
-
 function setThemeMode(mode) {
   if (mode === 'system') delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = mode;
   store(THEME_KEY, mode === 'system' ? null : mode);
-  syncThemeButton();
 }
 
 function setPalette(id) {
@@ -1141,11 +1131,6 @@ function initTheme() {
   if (saved) document.documentElement.dataset.theme = saved;
   const palette = stored(PALETTE_KEY);
   if (PALETTES.some((item) => item.id === palette)) setPalette(palette);
-  syncThemeButton();
-  document.getElementById('theme').addEventListener('click', () => {
-    setThemeMode(isDark() ? 'light' : 'dark');
-    if (currentRoute() === '/parametres') render();
-  });
 }
 
 document.getElementById('nav').append(...NAV.map(([path, text]) => h('a', { href: `#${path}`, text })));

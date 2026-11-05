@@ -31,6 +31,7 @@ def main() -> int:
     stop = threading.Event()
     def shutdown(*_: object) -> None:
         stop.set()
+        state.wake.set()
         threading.Thread(target=server.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGTERM, shutdown)

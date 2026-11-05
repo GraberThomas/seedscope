@@ -10,7 +10,7 @@ import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
 
-from . import db
+from . import db, settings
 from .config import Config
 from .qbit import QbitAuthError, QbitClient, QbitError
 
@@ -73,6 +73,7 @@ class LiveState:
     connection_status: str = ""
     last_success: int = 0
     last_error: str = ""
+    wake: threading.Event = field(default_factory=threading.Event)  # settings were changed
 
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
@@ -383,22 +384,25 @@ class Collector:
 
     def run(self, stop: threading.Event) -> None:
         """Poll until ``stop`` is set. Errors are logged and never end the loop."""
-        next_torrent_poll = 0.0
+        last_torrent_poll = 0.0
         logged_in = False
         while not stop.is_set():
             started = time.time()
-            wait = self.config.global_interval
+            intervals = settings.load(self.conn, self.config)
+            wait = intervals.global_interval
+            auth_failed = False
             try:
                 if not logged_in:
                     self.client.login()
                     logged_in = True
-                include_torrents = started >= next_torrent_poll
+                # One second of tolerance, or a slight drift would skip a whole cycle.
+                include_torrents = started - last_torrent_poll >= intervals.torrent_interval - 1
                 self.tick(int(started), include_torrents)
                 if include_torrents:
-                    next_torrent_poll = started + self.config.torrent_interval
+                    last_torrent_poll = started
             except QbitAuthError as exc:
                 logged_in = False
-                wait = AUTH_FAILURE_BACKOFF
+                auth_failed = True
                 self._record_error(f"Authentification refusee : {exc}")
             except QbitError as exc:
                 wait = ERROR_BACKOFF
@@ -406,7 +410,12 @@ class Collector:
             except sqlite3.Error as exc:
                 wait = ERROR_BACKOFF
                 self._record_error(f"Base de donnees : {exc}")
-            stop.wait(max(1.0, wait - (time.time() - started)))
+            if auth_failed:
+                # Saving settings must not shorten this wait: retries could get the IP banned.
+                stop.wait(AUTH_FAILURE_BACKOFF)
+                continue
+            self.state.wake.wait(max(1.0, wait - (time.time() - started)))
+            self.state.wake.clear()
 
     def _record_error(self, message: str) -> None:
         log.warning("%s", message)

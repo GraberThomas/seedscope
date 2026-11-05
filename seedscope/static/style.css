@@ -267,5 +267,9 @@ th button:hover { color: var(--ink); }
 .ranked .val { font-variant-numeric: tabular-nums; color: var(--ink-2); }
 .spark { display: block; }
 .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.settings { display: flex; flex-direction: column; gap: 14px; max-width: 640px; }
+.settings .card-head { margin-bottom: 0; }
+.setting { display: flex; flex-direction: column; gap: 4px; }
+.setting .field { justify-content: space-between; color: var(--ink); }
 .back { color: var(--ink-2); font-size: 13px; text-decoration: none; }
 .back:hover { text-decoration: underline; }

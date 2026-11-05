@@ -5,7 +5,7 @@ const WEEKDAYS = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
 const RANGES = [['1h', '1 h'], ['6h', '6 h'], ['24h', '24 h'], ['3d', '3 j'], ['7d', '7 j'], ['30d', '30 j'], ['90d', '90 j'], ['180d', '6 mois'], ['1y', '1 an'], ['all', 'Tout']];
 const WINDOWS = [[1, '24 h'], [7, '7 j'], [30, '30 j'], [90, '90 j'], [365, '1 an']];
 const BUCKET_NAMES = { min5: 'tranche de 5 min', min30: 'tranche de 30 min', hour: 'heure', hour6: 'tranche de 6 h', day: 'jour', week: 'semaine', month: 'mois' };
-const NAV = [['/', 'Aperçu'], ['/activite', 'Activité'], ['/torrents', 'Torrents'], ['/popularite', 'Popularité'], ['/trackers', 'Trackers'], ['/rentabilite', 'Rentabilité']];
+const NAV = [['/', 'Aperçu'], ['/activite', 'Activité'], ['/torrents', 'Torrents'], ['/popularite', 'Popularité'], ['/trackers', 'Trackers'], ['/rentabilite', 'Rentabilité'], ['/parametres', 'Paramètres']];
 const NO_DATA = 'Pas encore assez de données : la collecte vient de démarrer, cette vue se remplira avec le temps.';
 const UP = 'var(--series-1)';
 const DOWN = 'var(--series-2)';
@@ -617,6 +617,51 @@ async function profitability() {
   ];
 }
 
+function intervalName(seconds) {
+  if (seconds < 60) return `${seconds} secondes`;
+  if (seconds === 60) return '1 minute';
+  if (seconds === 3600) return '1 heure';
+  return `${seconds / 60} minutes`;
+}
+
+async function settingsPage() {
+  const current = await api('/api/settings');
+  const options = (values) => values.map((value) => [String(value), intervalName(value)]);
+  let globalInterval = current.global_interval;
+  let torrentInterval = current.torrent_interval;
+  const message = h('span', { class: 'subtle', role: 'status' });
+  const save = async () => {
+    message.textContent = 'Enregistrement…';
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ global_interval: globalInterval, torrent_interval: torrentInterval }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+      message.textContent = '✓ Enregistré, appliqué immédiatement.';
+    } catch (error) {
+      message.textContent = `⚠ Échec : ${error.message}`;
+    }
+  };
+  return [
+    h('h1', { text: 'Paramètres' }),
+    h('section', { class: 'card settings' },
+      h('div', { class: 'card-head' }, h('h2', { text: 'Fréquence de collecte' })),
+      h('div', { class: 'setting' },
+        select('Stats globales', options(current.global_options), String(globalInterval), (value) => { globalInterval = Number(value); }),
+        h('p', { class: 'subtle', text: 'Débits, totaux envoyés et reçus, torrents en cours de transfert.' })),
+      h('div', { class: 'setting' },
+        select('Détail par torrent', options(current.torrent_options), String(torrentInterval), (value) => { torrentInterval = Number(value); }),
+        h('p', { class: 'subtle', text: 'Upload, ratio, popularité, seeders et leechers de chaque torrent. Ne peut pas être plus fréquent que les stats globales.' })),
+      h('p', { class: 'note', text: 'Une collecte plus fréquente donne des courbes plus fines, mais la base grossit plus vite et qBittorrent est davantage sollicité.' }),
+      h('div', { class: 'filters' },
+        h('button', { class: 'ghost', type: 'button', text: 'Enregistrer', onclick: save }),
+        message)),
+  ];
+}
+
 // ---- Router, status, theme ----
 const AUTO_REFRESH = new Set(['/', '/activite']);
 let renderToken = 0;
@@ -630,6 +675,7 @@ async function pageFor(route) {
   if (route === '/activite') return activity();
   if (route === '/torrents') return torrentsPage();
   if (route === '/popularite') return popularityPage();
+  if (route === '/parametres') return settingsPage();
   if (route === '/trackers') return trackers();
   if (route === '/rentabilite') return profitability();
   if (route.startsWith('/torrent/')) return torrentDetail(route.slice('/torrent/'.length));
@@ -669,7 +715,7 @@ async function refreshStatus() {
   const status = document.getElementById('status');
   try {
     const summary = await api('/api/summary');
-    const stale = !summary.last_sample || Date.now() / 1000 - summary.last_sample > 300;
+    const stale = !summary.last_sample || Date.now() / 1000 - summary.last_sample > Math.max(300, summary.global_interval * 3);
     const failed = Boolean(summary.collector_error) || stale;
     status.className = `status ${failed ? 'error' : 'ok'}`;
     const label = summary.collector_error

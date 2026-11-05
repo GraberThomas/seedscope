@@ -235,7 +235,7 @@ class ApiTest(unittest.TestCase):
 
     def test_api_is_read_only_and_never_exposes_a_passkey(self):
         self.assertEqual(self.status("/api/torrents", method="DELETE"), 501)
-        self.assertEqual(self.status("/api/torrents", method="POST"), 501)
+        self.assertEqual(self.status("/api/torrents", method="POST"), 405)
         with self.assertRaises(Exception):
             ro = db.connect_readonly(self.config.db_path)
             self.addCleanup(ro.close)
@@ -251,6 +251,67 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(self.status("/static/app.js"), 404)
         with urllib.request.urlopen(self.base + "/") as response:
             self.assertIn("default-src 'none'", response.headers["Content-Security-Policy"])
+
+
+class SettingsApiTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        path = str(Path(self.tmp.name) / "s.db")
+        db.connect(path).close()
+        config = Config("http://qbit", "u", "p", db_path=path, host="127.0.0.1", port=0)
+        self.state = LiveState()
+        self.server = make_server(config, self.state)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.base = f"http://127.0.0.1:{self.server.server_port}"
+
+    def post(self, payload, content_type="application/json", origin=None):
+        data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+        headers = {"Content-Type": content_type}
+        if origin:
+            headers["Origin"] = origin
+        request = urllib.request.Request(self.base + "/api/settings", data=data, headers=headers)
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status
+        except urllib.error.HTTPError as exc:
+            return exc.code
+
+    def current(self):
+        with urllib.request.urlopen(self.base + "/api/settings") as response:
+            return json.load(response)
+
+    def test_defaults_then_save_persists_and_wakes_the_collector(self):
+        self.assertEqual(self.current()["global_interval"], 60)
+        valid = {"global_interval": 120, "torrent_interval": 600}
+        self.assertEqual(self.post(valid), 200)
+        self.assertTrue(self.state.wake.is_set())
+        self.assertEqual(self.current()["torrent_interval"], 600)
+
+    def test_rejects_values_outside_the_allowed_list(self):
+        for payload in (
+            {"global_interval": 1, "torrent_interval": 300},
+            {"global_interval": 60, "torrent_interval": 2},
+            {"global_interval": "60", "torrent_interval": 300},
+            {"global_interval": True, "torrent_interval": 300},
+            {"global_interval": 300, "torrent_interval": 60},
+            {},
+            [],
+        ):
+            self.assertEqual(self.post(payload), 400, payload)
+        self.assertEqual(self.post(b"{not json"), 400)
+        self.assertEqual(self.current()["global_interval"], 60)
+        self.assertFalse(self.state.wake.is_set())
+
+    def test_rejects_requests_from_another_site(self):
+        valid = {"global_interval": 120, "torrent_interval": 600}
+        self.assertEqual(self.post(valid, origin="https://evil.example"), 403)
+        self.assertEqual(self.post(valid, content_type="text/plain"), 415)
+        self.assertEqual(self.current()["global_interval"], 60)
+        same_origin = self.base
+        self.assertEqual(self.post(valid, origin=same_origin), 200)
 
 
 class BackfillTest(unittest.TestCase):

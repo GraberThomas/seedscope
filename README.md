@@ -16,6 +16,7 @@ aucune dépendance Python, environ 20 Mio de RAM.
 - **Popularité** : torrents les plus populaires, les plus demandés et les moins seedés, moyenne par tracker.
 - **Trackers et catégories** : upload dans le temps, part de chacun, volume et ratio.
 - **Rentabilité** : upload rapporté à l'espace occupé, et poids morts à partir d'un seuil d'inactivité.
+- **Paramètres** : fréquences de collecte, modifiables sans redémarrage.
 
 Les cross-seeds sont suivis séparément, par hash. Les vues de rentabilité les regroupent par contenu,
 car supprimer un seul d'entre eux ne libère aucun espace.
@@ -41,8 +42,8 @@ L'interface répond sur `http://<ip-du-serveur>:3310/`.
 | `SEEDSCOPE_LAN_IP` | Adresse locale sur laquelle publier l'interface | requis |
 | `SEEDSCOPE_PORT` | Port publié | `3310` |
 | `SEEDSCOPE_TRACKER_ALIASES` | Regroupe des hôtes : `hote1=Nom,hote2=Nom` | vide |
-| `SEEDSCOPE_GLOBAL_INTERVAL` | Collecte des compteurs globaux, en secondes | `60` |
-| `SEEDSCOPE_TORRENT_INTERVAL` | Collecte par torrent, en secondes | `300` |
+| `SEEDSCOPE_GLOBAL_INTERVAL` | Collecte des compteurs globaux, en secondes, tant que la page Paramètres n'a rien enregistré | `60` |
+| `SEEDSCOPE_TORRENT_INTERVAL` | Collecte par torrent, en secondes, tant que la page Paramètres n'a rien enregistré | `300` |
 | `SEEDSCOPE_MINUTE_RETENTION_DAYS` | Conservation des mesures globales à la minute | `90` |
 | `SEEDSCOPE_HOURLY_RETENTION_DAYS` | Conservation de l'upload horaire par torrent | `365` |
 | `SEEDSCOPE_SAMPLE_FINE_RETENTION_DAYS` | Courbes par torrent, mesures toutes les 5 min | `30` |
@@ -95,7 +96,9 @@ docker run --rm --network <reseau-de-prometheus> -v seedscope_seedscope-data:/da
 
 ## Sécurité
 
-- L'interface n'a **pas d'authentification**. Publiez-la uniquement sur un réseau de confiance, jamais sur Internet.
+- L'interface n'a **pas d'authentification** : toute personne qui y accède voit les stats et peut changer les
+  fréquences de collecte. Publiez-la uniquement sur un réseau de confiance, jamais sur Internet.
+- Seules des valeurs prédéfinies sont acceptées, et les requêtes venant d'un autre site sont refusées.
 - Les URL d'annonce contiennent votre passkey : seul le nom d'hôte du tracker est conservé.
 - Le conteneur est en lecture seule, sans capacité Linux, et les noms de torrents ne sont jamais interprétés comme
   du HTML (`textContent` et Content-Security-Policy stricte).

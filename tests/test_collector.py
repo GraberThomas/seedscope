@@ -1,10 +1,13 @@
+import itertools
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests.helpers import GIB, HASH_A, HASH_B, PASSKEY, torrent
 
-from seedscope import db
+from seedscope import db, settings
 from seedscope.collector import (
     Collector,
     GlobalSample,
@@ -37,6 +40,36 @@ def make_config(path: str, **overrides) -> Config:
         db_path=path,
         **overrides,
     )
+
+
+class SlowLoopClient(FakeClient):
+    """Counts polls, and stops the loop after a given number of them."""
+
+    def __init__(self, stop, wake, stop_after):
+        super().__init__()
+        self.stop = stop
+        self.wake = wake
+        self.stop_after = stop_after
+        self.full_polls = 0
+        self.global_polls = 0
+
+    def login(self):
+        pass
+
+    def server_state(self):
+        self.global_polls += 1
+        return {"alltime_ul": 1, "alltime_dl": 1}
+
+    def torrents(self, active_only=False):
+        if not active_only:
+            self.full_polls += 1
+        if active_only:
+            if self.global_polls >= self.stop_after:
+                self.stop.set()
+                self.wake.set()
+            else:
+                self.wake.set()  # do not wait for the interval during the test
+        return []
 
 
 class PureFunctionsTest(unittest.TestCase):
@@ -191,6 +224,24 @@ class CollectorTest(unittest.TestCase):
             for row in self.conn.execute("SELECT ts FROM torrent_samples")
         )
         self.assertEqual(ages, [29, 179, 900])
+
+    def test_run_reads_saved_intervals_at_every_cycle(self):
+        stop = threading.Event()
+        client = SlowLoopClient(stop, self.collector.state.wake, stop_after=3)
+        self.collector.client = client
+        settings.save(self.conn, settings.Intervals(30, 3600))
+        self.collector.run(stop)
+        self.assertEqual(client.global_polls, 3)
+        self.assertEqual(client.full_polls, 1)  # the next one is an hour away
+
+    def test_run_collects_torrents_again_once_the_interval_is_lowered(self):
+        stop = threading.Event()
+        client = SlowLoopClient(stop, self.collector.state.wake, stop_after=2)
+        self.collector.client = client
+        settings.save(self.conn, settings.Intervals(30, 60))
+        with mock.patch("seedscope.collector.time.time", side_effect=itertools.count(1000, 61)):
+            self.collector.run(stop)
+        self.assertEqual(client.full_polls, 2)
 
     def test_tick_collects_everything_and_prune_respects_retention(self):
         self.client.state = {

@@ -12,12 +12,13 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlsplit
 
-from . import __version__, db, queries
+from . import __version__, db, queries, settings
 from .collector import LiveState
 from .config import Config
 
 log = logging.getLogger("seedscope.web")
 
+MAX_SETTINGS_BODY = 1024
 STATIC_DIR = Path(__file__).parent / "static"
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -63,7 +64,10 @@ def make_handler(
     config: Config, state: LiveState, clock: Callable[[], float]
 ) -> type[BaseHTTPRequestHandler]:
     def api_summary(conn: sqlite3.Connection, params: Params, now: int) -> Any:
-        return queries.summary(conn, now, state.snapshot())
+        return {
+            **queries.summary(conn, now, state.snapshot()),
+            "global_interval": settings.load(conn, config).global_interval,
+        }
 
     def api_timeseries(conn: sqlite3.Connection, params: Params, now: int) -> Any:
         return queries.timeseries(conn, params.text("range", "7d"), now)
@@ -117,6 +121,18 @@ def make_handler(
     def api_popularity(conn: sqlite3.Connection, params: Params, now: int) -> Any:
         return queries.popularity(conn)
 
+    def api_settings(conn: sqlite3.Connection, params: Params, now: int) -> Any:
+        return settings_payload(conn)
+
+    def settings_payload(conn: sqlite3.Connection) -> dict[str, Any]:
+        current = settings.load(conn, config)
+        return {
+            "global_interval": current.global_interval,
+            "torrent_interval": current.torrent_interval,
+            "global_options": settings.GLOBAL_OPTIONS,
+            "torrent_options": settings.TORRENT_OPTIONS,
+        }
+
     routes: dict[str, Callable[[sqlite3.Connection, Params, int], Any]] = {
         "/api/summary": api_summary,
         "/api/timeseries": api_timeseries,
@@ -128,6 +144,7 @@ def make_handler(
         "/api/contents": api_contents,
         "/api/breakdown": api_breakdown,
         "/api/popularity": api_popularity,
+        "/api/settings": api_settings,
     }
 
     class Handler(BaseHTTPRequestHandler):
@@ -176,6 +193,60 @@ def make_handler(
                 self._json({"error": "Erreur interne"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
         do_HEAD = do_GET  # noqa: N815
+
+        def do_POST(self) -> None:  # noqa: N802
+            if urlsplit(self.path).path != "/api/settings":
+                self._json({"error": "Methode non autorisee"}, HTTPStatus.METHOD_NOT_ALLOWED)
+                return
+            try:
+                self._save_settings()
+            except settings.InvalidSetting as exc:
+                self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception:
+                log.exception("Erreur a l'enregistrement des parametres")
+                self._json({"error": "Erreur interne"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        def _save_settings(self) -> None:
+            # Another website must not be able to change settings through a visitor's browser:
+            # a JSON body forces a CORS preflight, which this server never accepts.
+            content_type = self.headers.get("Content-Type", "").split(";")[0].strip()
+            if content_type != "application/json":
+                self._json({"error": "JSON attendu"}, HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+                return
+            origin = self.headers.get("Origin")
+            if origin is not None and urlsplit(origin).netloc != self.headers.get("Host"):
+                self._json({"error": "Origine refusee"}, HTTPStatus.FORBIDDEN)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", ""))
+            except ValueError:
+                length = -1
+            if not 0 < length <= MAX_SETTINGS_BODY:
+                self._json({"error": "Taille invalide"}, HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                body = json.loads(self.rfile.read(length))
+            except ValueError:
+                self._json({"error": "JSON invalide"}, HTTPStatus.BAD_REQUEST)
+                return
+            if not isinstance(body, dict):
+                self._json({"error": "JSON invalide"}, HTTPStatus.BAD_REQUEST)
+                return
+            intervals = settings.validate(body.get("global_interval"), body.get("torrent_interval"))
+            conn = db.connect(config.db_path)
+            try:
+                settings.save(conn, intervals)
+            finally:
+                conn.close()
+            state.wake.set()
+            self._json(
+                {
+                    "global_interval": intervals.global_interval,
+                    "torrent_interval": intervals.torrent_interval,
+                }
+            )
 
         def _api(self, query: Callable[[sqlite3.Connection, int], Any]) -> None:
             conn = db.connect_readonly(config.db_path)

@@ -8,10 +8,12 @@ aucune dépendance Python, environ 20 Mio de RAM.
 
 ## Fonctionnalités
 
-- **Aperçu** : ratio global, envoi du jour, de la semaine et du mois comparés à la période précédente,
-  débits, volume envoyé, upload cumulé et évolution du ratio, de 24 h à tout l'historique.
+- **Aperçu** : ratio global, débits, volume envoyé, upload cumulé et évolution du ratio, avec les totaux,
+  le débit moyen et le pic de la période. Dix durées : 1 h, 6 h, 24 h, 3 j, 7 j, 30 j, 90 j, 6 mois, 1 an, tout.
 - **Activité** : torrents en cours de transfert, calendrier annuel de l'upload, heures les plus actives.
-- **Torrents** : tableau triable et filtrable, torrents supprimés inclus, avec une page par torrent.
+- **Torrents** : tableau triable et filtrable avec mini-courbe sur 30 jours, torrents supprimés inclus.
+- **Page par torrent** : courbes d'upload, de ratio, de popularité, de seeders et de leechers.
+- **Popularité** : torrents les plus populaires, les plus demandés et les moins seedés, moyenne par tracker.
 - **Trackers et catégories** : upload dans le temps, part de chacun, volume et ratio.
 - **Rentabilité** : upload rapporté à l'espace occupé, et poids morts à partir d'un seuil d'inactivité.
 
@@ -41,11 +43,13 @@ L'interface répond sur `http://<ip-du-serveur>:3310/`.
 | `SEEDSCOPE_TRACKER_ALIASES` | Regroupe des hôtes : `hote1=Nom,hote2=Nom` | vide |
 | `SEEDSCOPE_GLOBAL_INTERVAL` | Collecte des compteurs globaux, en secondes | `60` |
 | `SEEDSCOPE_TORRENT_INTERVAL` | Collecte par torrent, en secondes | `300` |
-| `SEEDSCOPE_MINUTE_RETENTION_DAYS` | Conservation des mesures à la minute | `30` |
-| `SEEDSCOPE_HOURLY_RETENTION_DAYS` | Conservation de l'horaire par torrent | `90` |
+| `SEEDSCOPE_MINUTE_RETENTION_DAYS` | Conservation des mesures globales à la minute | `90` |
+| `SEEDSCOPE_HOURLY_RETENTION_DAYS` | Conservation de l'upload horaire par torrent | `365` |
+| `SEEDSCOPE_SAMPLE_FINE_RETENTION_DAYS` | Courbes par torrent, mesures toutes les 5 min | `30` |
+| `SEEDSCOPE_SAMPLE_HOURLY_RETENTION_DAYS` | Courbes par torrent, mesures horaires | `180` |
 | `TZ` | Fuseau utilisé pour découper les jours | `Europe/Paris` |
 
-Les trois dernières variables `SEEDSCOPE_*` ne sont pas transmises par `compose.yaml` : ajoutez-les à sa
+Les variables d'intervalle et de conservation ne sont pas transmises par `compose.yaml` : ajoutez-les à sa
 section `environment` pour les modifier.
 
 ### Reprendre l'historique de Prometheus
@@ -78,6 +82,10 @@ docker run --rm --network <reseau-de-prometheus> -v seedscope_seedscope-data:/da
 
 - **Historique** : les courbes partent du début de la collecte. Avant cela, seuls les totaux de qBittorrent
   existent : ils servent de point de départ sans créer de faux pic.
+- **Popularité** : c'est la valeur de qBittorrent, soit le ratio divisé par le nombre de mois actifs. Elle mesure ce
+  qui a tourné pour vous, pas la demande actuelle, que les leechers annoncés reflètent mieux.
+- **Courbes par torrent** : elles partent de la version 0.2. Une mesure est prise quand quelque chose change, et au
+  moins une fois par heure. Les vues longues se contentent des mesures horaires, puis quotidiennes.
 - **Ratio** : c'est celui de qBittorrent. Il peut différer de celui affiché par les trackers.
 - **Volume seedé** : estimation haute. Les contenus sont regroupés par taille exacte, ce qui ne détecte pas un
   épisode partageant ses fichiers avec un pack de saison.
@@ -108,10 +116,11 @@ docker run --rm --network <reseau-de-prometheus> -v seedscope_seedscope-data:/da
 
 | Table | Contenu | Conservation |
 |---|---|---|
-| `global_minute` | Débits et compteurs globaux | 30 jours |
+| `global_minute` | Débits et compteurs globaux | 90 jours |
 | `global_hourly` | Agrégats globaux par heure | Illimitée |
-| `torrent_hourly` | Upload et download par torrent et par heure | 90 jours |
+| `torrent_hourly` | Upload et download par torrent et par heure | 1 an |
 | `torrent_daily` | Upload et download par torrent et par jour | Illimitée |
+| `torrent_samples` | Upload, ratio, popularité et pairs par torrent | 30 jours à 5 min, 6 mois à l'heure, puis un point par jour |
 | `torrents` | Dernier état de chaque torrent, supprimés inclus | Illimitée |
 
 ## Développement

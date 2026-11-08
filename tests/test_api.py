@@ -285,6 +285,7 @@ class ApiTest(unittest.TestCase):
     def test_calendar_and_heatmap(self):
         calendar = self.get("/api/calendar")
         self.assertEqual(calendar["end"], local_day(NOW))
+        self.assertEqual(calendar["start"], calendar["days"][0]["day"])
         heatmap = queries.heatmap(self.conn, NOW)
         self.assertEqual(len(heatmap["cells"]), 7 * 24)
 

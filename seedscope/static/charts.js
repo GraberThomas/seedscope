@@ -2,7 +2,7 @@
 // torrent names come from third parties and are untrusted.
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
-const SEQ_CLASSES = 5;
+const SEQ_CLASSES = 9; // --ramp-1..9 in style.css, derived from each theme's --seq-1..5
 
 export function h(tag, props = {}, ...children) {
   const element = document.createElement(tag);
@@ -412,32 +412,78 @@ export function barChart({ labels, tipLabels, series, format, axisFormat, binary
   return wrap;
 }
 
-// ---- Sequential scales (one hue, light to dark) ----
-function sequential(values) {
-  const peak = Math.max(0, ...values);
-  return (value) => {
-    if (value <= 0 || peak === 0) return 'var(--seq-0)';
-    const level = Math.min(SEQ_CLASSES, Math.ceil(Math.sqrt(value / peak) * SEQ_CLASSES));
-    return `var(--seq-${Math.max(1, level)})`;
+// ---- Sequential scales (one hue, light to dark), fitted to the values on screen ----
+// Linear classes from the smallest to the largest non-zero value, so the full ramp is
+// always used; fewer classes when there are fewer distinct values.
+function sequential(values, format) {
+  const positive = values.filter((v) => v > 0);
+  const lo = positive.length ? Math.min(...positive) : 0;
+  const hi = positive.length ? Math.max(...positive) : 0;
+  const count = Math.max(1, Math.min(SEQ_CLASSES, new Set(positive).size));
+  const ramp = (i) => (count === 1 ? SEQ_CLASSES : Math.round(1 + (i * (SEQ_CLASSES - 1)) / (count - 1)));
+  const classOf = (value) => {
+    if (value === null || value === undefined) return 'none';
+    if (value <= 0) return 'zero';
+    if (hi === lo) return 0;
+    return Math.min(count - 1, Math.floor(((value - lo) / (hi - lo)) * count));
   };
+  const fill = (cls) => (cls === 'none' ? 'var(--seq-none)' : cls === 'zero' ? 'var(--seq-0)' : `var(--ramp-${ramp(cls)})`);
+  const items = [];
+  if (values.some((v) => v === null || v === undefined)) items.push({ cls: 'none', label: 'Pas de données' });
+  if (values.some((v) => v !== null && v !== undefined && v <= 0)) items.push({ cls: 'zero', label: format(0) });
+  for (let i = 0; i < (positive.length ? count : 0); i += 1) {
+    const from = hi === lo ? lo : lo + (i * (hi - lo)) / count;
+    const to = hi === lo ? hi : lo + ((i + 1) * (hi - lo)) / count;
+    items.push({ cls: i, label: from === to ? format(from) : `${format(from)} – ${format(to)}` });
+  }
+  const swatches = new Map();
+  const legend = h('ul', { class: 'scale', 'aria-label': 'Échelle des couleurs' }, items.map((item) => {
+    const swatch = h('span', { class: 'key-box' });
+    swatch.style.background = fill(item.cls);
+    const row = h('li', {}, swatch, h('span', { text: item.label }));
+    swatches.set(item.cls, row);
+    return row;
+  }));
+  const highlight = (cls) => swatches.forEach((row, key) => row.classList.toggle('active', key === cls));
+  return { color: (value) => fill(classOf(value)), classOf, legend, highlight };
 }
 
-function scaleLegend(low, high) {
-  return h('div', { class: 'scale', 'aria-hidden': 'true' },
-    h('span', { class: 'gap', text: low }),
-    [1, 2, 3, 4, 5].map((level) => {
-      const swatch = h('span', { class: 'key-box' });
-      swatch.style.background = `var(--seq-${level})`;
-      return swatch;
-    }),
-    h('span', { class: 'gap', text: high }));
+// Clicked cell: its value stays written under the chart, its color is marked in the scale.
+function cellPicker(scale, hint) {
+  const readout = h('p', { class: 'readout', 'aria-live': 'polite', text: hint });
+  let selected = null;
+  let selectedCell = null;
+  const pick = (key, cell, title, value, detail) => {
+    if (selectedCell) selectedCell.classList.remove('selected');
+    if (selected === key) {
+      selected = null;
+      selectedCell = null;
+      readout.replaceChildren(document.createTextNode(hint));
+      scale.highlight(null);
+      return;
+    }
+    selected = key;
+    selectedCell = cell;
+    cell.classList.add('selected');
+    readout.replaceChildren(h('strong', { text: title }), document.createTextNode(` : ${detail}`));
+    scale.highlight(scale.classOf(value));
+  };
+  // After a redraw, the new element for the selected key takes the mark back.
+  const restore = (key, cell) => {
+    if (key === selected) {
+      selectedCell = cell;
+      cell.classList.add('selected');
+    }
+  };
+  return { readout, pick, restore };
 }
 
 // ---- Year calendar: one cell per day ----
 export function calendarChart({ start, end, days, format, formatDay, empty }) {
   if (!days.length) return emptyState(empty);
   const byDay = new Map(days.map((d) => [d.day, d.up]));
-  const color = sequential(days.map((d) => d.up));
+  const scale = sequential(days.map((d) => d.up), format);
+  const picker = cellPicker(scale, 'Clique sur une case pour afficher sa valeur.');
   const left = 22;
   const top = 18;
   const first = new Date(`${start}T12:00:00`);
@@ -467,28 +513,36 @@ export function calendarChart({ start, end, days, format, formatDay, empty }) {
           lastLabelWeek = week;
         }
       }
-      const has = byDay.has(key);
-      const value = byDay.get(key) || 0;
+      const value = byDay.has(key) ? byDay.get(key) : null;
       const cell = svg('rect', {
         x: left + week * step, y: top + weekday * step, width: size, height: size, rx: 2, class: 'cell',
-        fill: has ? color(value) : 'var(--seq-none)',
+        fill: scale.color(value),
       }, root);
       const label = formatDay(key);
-      cell.addEventListener('pointermove', (event) => showTip(event.clientX, event.clientY, label, [{ value: has ? format(value) : 'Pas de données' }]));
+      const text = value === null ? 'Pas de données' : format(value);
+      cell.addEventListener('pointermove', (event) => showTip(event.clientX, event.clientY, label, [{ value: text }]));
       cell.addEventListener('pointerleave', hideTip);
+      cell.addEventListener('click', () => picker.pick(key, cell, label, value, value === null ? text : `${text} envoyés`));
+      picker.restore(key, cell);
     }
     box.replaceChildren(root);
+    box.scrollLeft = box.scrollWidth; // most recent days in view when the grid overflows
   });
-  return h('div', {}, box, scaleLegend('Moins', 'Plus'));
+  return h('div', {}, box, picker.readout, scale.legend);
 }
 
 // ---- Weekday / hour heatmap ----
 export function heatmapChart({ cells, format, weekdays, empty }) {
   if (!cells.length) return emptyState(empty);
-  const box = h('div', { class: 'chart' });
-  const wrap = h('div', {}, box, scaleLegend('Moins', 'Plus'));
   const lookup = new Map(cells.map((c) => [`${c.weekday}-${c.hour}`, c]));
-  const color = sequential(cells.map((c) => c.up));
+  const values = [];
+  for (let day = 0; day < 7; day += 1) {
+    for (let hour = 0; hour < 24; hour += 1) values.push(lookup.get(`${day}-${hour}`)?.up ?? null);
+  }
+  const scale = sequential(values, format);
+  const picker = cellPicker(scale, 'Clique sur une case pour afficher sa valeur.');
+  const box = h('div', { class: 'chart' });
+  const wrap = h('div', {}, box, picker.readout, scale.legend);
   observeWidth(box, (width) => {
     const left = 34;
     const top = 16;
@@ -503,15 +557,21 @@ export function heatmapChart({ cells, format, weekdays, empty }) {
     weekdays.forEach((name, day) => {
       svg('text', { x: 0, y: top + day * (cellH + gap) + 15, class: 'axis-label', text: name }, root);
       for (let hour = 0; hour < 24; hour += 1) {
-        const data = lookup.get(`${day}-${hour}`);
+        const key = `${day}-${hour}`;
+        const data = lookup.get(key);
+        const value = data ? data.up : null;
         const cell = svg('rect', {
           x: left + hour * (cellW + gap), y: top + day * (cellH + gap), width: cellW, height: cellH, rx: 2, class: 'cell',
-          fill: data ? color(data.up) : 'var(--seq-none)',
+          fill: scale.color(value),
         }, root);
-        cell.addEventListener('pointermove', (event) => showTip(event.clientX, event.clientY, `${name} ${hour} h – ${hour + 1} h`, [
+        const title = `${name} ${hour} h – ${hour + 1} h`;
+        cell.addEventListener('pointermove', (event) => showTip(event.clientX, event.clientY, title, [
           data ? { value: format(data.up), label: `par heure en moyenne (${data.samples} mesures)` } : { value: 'Pas de données' },
         ]));
         cell.addEventListener('pointerleave', hideTip);
+        cell.addEventListener('click', () => picker.pick(key, cell, title, value,
+          data ? `${format(data.up)} par heure en moyenne (${data.samples} mesures)` : 'Pas de données'));
+        picker.restore(key, cell);
       }
     });
     box.replaceChildren(root);

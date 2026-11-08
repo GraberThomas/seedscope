@@ -346,6 +346,9 @@ def calendar(conn: sqlite3.Connection, now: int, days: int = 371) -> dict[str, A
         "SELECT day, SUM(up_bytes) AS up FROM global_hourly WHERE day >= ? GROUP BY day ORDER BY day",
         (start,),
     ).fetchall()
+    # Start at the first recorded day: a year of empty cells would push the real data out of view.
+    if rows:
+        start = rows[0]["day"]
     return {"start": start, "end": local_day(now), "days": [dict(row) for row in rows]}
 
 

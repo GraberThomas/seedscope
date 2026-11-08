@@ -98,6 +98,7 @@ function ago(ts) {
   return `il y a ${duration(delta)}`;
 }
 const dayLabel = (key) => new Date(`${key}T12:00:00`).toLocaleDateString('fr-FR', { dateStyle: 'full' });
+const shortDay = (key) => new Date(`${key}T12:00:00`).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
 function bucketLabels(kind, keys) {
   if (kind === 'min5' || kind === 'min30' || kind === 'hour' || kind === 'hour6') {
     const times = keys.map((k) => new Date(k * 1000));
@@ -435,7 +436,7 @@ async function activity() {
       ], direction, (value) => { ui.liveDirection = value; render(); }),
       scopeFilter(ui.liveScope, (value) => { ui.liveScope = value; render(); })),
     card('Transferts en cours', live.ts ? `Mis à jour ${ago(live.ts)}` : null, liveTable),
-    card('Upload par jour', '371 derniers jours',
+    card('Upload par jour', cal.days.length ? `Depuis le ${shortDay(cal.start)}` : null,
       calendarChart({ ...cal, format: bytes, formatDay: dayLabel, empty: NO_DATA }),
       tableView(
         () => [{ key: 'label', label: 'Jour', order: -1 }, { key: 'up', label: 'Envoyé', num: true, format: bytes }],

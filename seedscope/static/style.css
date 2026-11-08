@@ -364,9 +364,27 @@ input[type="search"] { width: min(320px, 100%); }
 .legend-toggles button[aria-pressed="false"] .key-line { opacity: 0.35; }
 .key-line { width: 14px; height: 2px; border-radius: 1px; flex: none; }
 .key-box { width: 10px; height: 10px; border-radius: 2px; flex: none; }
-.scale { display: flex; align-items: center; gap: 3px; margin-top: 8px; color: var(--muted); font-size: 11px; }
+/* Nine-step sequential ramp for the cell charts, interpolated between the five --seq steps of
+   the active theme and palette, so it follows every palette in light and dark mode. */
+:root {
+  --ramp-1: var(--seq-1);
+  --ramp-2: color-mix(in oklab, var(--seq-1), var(--seq-2));
+  --ramp-3: var(--seq-2);
+  --ramp-4: color-mix(in oklab, var(--seq-2), var(--seq-3));
+  --ramp-5: var(--seq-3);
+  --ramp-6: color-mix(in oklab, var(--seq-3), var(--seq-4));
+  --ramp-7: var(--seq-4);
+  --ramp-8: color-mix(in oklab, var(--seq-4), var(--seq-5));
+  --ramp-9: var(--seq-5);
+}
+.scale { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 8px 0 0; padding: 0; list-style: none; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.scale li { display: inline-flex; align-items: center; gap: 5px; padding: 2px 6px; border: 1px solid transparent; border-radius: 6px; }
+.scale li.active { color: var(--ink); border-color: var(--ink); }
 .scale .key-box { width: 12px; height: 12px; }
-.scale .gap { margin: 0 4px; }
+.cell { cursor: pointer; }
+.cell.selected { stroke: var(--ink); stroke-width: 2; }
+.readout { min-height: 1.4em; margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+.readout strong { color: var(--ink); font-weight: 600; }
 .empty { padding: 28px 12px; color: var(--muted); text-align: center; }
 
 details.table-view { margin-top: 10px; }

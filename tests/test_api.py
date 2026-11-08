@@ -305,7 +305,7 @@ class ApiTest(unittest.TestCase):
                 self.assertNotIn(PASSKEY, response.read().decode())
 
     def test_static_files_and_traversal(self):
-        for path in ("/", "/app.js", "/charts.js", "/style.css"):
+        for path in ("/", "/app.js", "/charts.js", "/table-sort.js", "/style.css"):
             self.assertEqual(self.status(path), 200, path)
         self.assertEqual(self.status("/../config.py"), 404)
         self.assertEqual(self.status("/static/app.js"), 404)

@@ -1,6 +1,7 @@
 import json
 import threading
 import unittest
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from seedscope.qbit import QbitAuthError, QbitClient
@@ -11,6 +12,7 @@ class FakeQbit(BaseHTTPRequestHandler):
     post_paths: list[str] = []
     accept = True
     sync_calls: list[str] = []
+    bodies: list[bytes] = []
 
     def log_message(self, *args):
         pass
@@ -23,8 +25,12 @@ class FakeQbit(BaseHTTPRequestHandler):
 
     def do_POST(self):
         type(self).post_paths.append(self.path)
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        if self.path != "/api/v2/auth/login":
+            type(self).bodies.append(body)
+            self._reply(200, b"")
+            return
         type(self).logins += 1
-        self.rfile.read(int(self.headers.get("Content-Length", 0)))
         if not type(self).accept:
             self._reply(200, b"Fails.")
             return
@@ -43,6 +49,8 @@ class FakeQbit(BaseHTTPRequestHandler):
             else:
                 payload = {"rid": 2, "server_state": {"alltime_ul": 20}}
             self._reply(200, json.dumps(payload).encode())
+        elif self.path == "/api/v2/app/preferences":
+            self._reply(200, json.dumps({"up_limit": 2048, "alt_up_limit": 10240}).encode())
         else:
             self._reply(200, b"[]")
 
@@ -53,6 +61,7 @@ class QbitClientTest(unittest.TestCase):
         FakeQbit.post_paths = []
         FakeQbit.accept = True
         FakeQbit.sync_calls = []
+        FakeQbit.bodies = []
         self.server = HTTPServer(("127.0.0.1", 0), FakeQbit)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.server_close)
@@ -76,7 +85,15 @@ class QbitClientTest(unittest.TestCase):
         self.assertEqual(state, {"alltime_ul": 20, "alltime_dl": 5})
         self.assertEqual(FakeQbit.sync_calls[1], "/api/v2/sync/maindata?rid=1")
 
-    def test_only_the_login_is_ever_posted(self):
+    def test_upload_limit_writes_the_normal_limit_only(self):
+        self.client.login()
+        self.assertEqual(self.client.upload_limit(), 2048)
+        self.client.set_upload_limit(1048576)
+        self.assertEqual(FakeQbit.post_paths[-1], "/api/v2/app/setPreferences")
+        sent = urllib.parse.parse_qs(FakeQbit.bodies[-1].decode())
+        self.assertEqual(json.loads(sent["json"][0]), {"up_limit": 1048576})
+
+    def test_reading_never_posts_anything_but_the_login(self):
         self.client.login()
         self.client.server_state()
         self.client.torrents(active_only=True)

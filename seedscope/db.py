@@ -109,6 +109,17 @@ MIGRATIONS = [
     INSERT INTO meta (key, value)
         SELECT 'payload_ul', CAST(alltime_ul AS TEXT) FROM global_minute ORDER BY ts DESC LIMIT 1;
     """,
+    """
+    -- Periods during which SeedScope lowered the upload limit while something downloaded.
+    -- ended_by: idle, manual, disabled or stopped; empty while the period lasts.
+    CREATE TABLE throttle_events (
+        start INTEGER PRIMARY KEY,
+        end INTEGER,
+        up_limit INTEGER NOT NULL,
+        previous_limit INTEGER NOT NULL,
+        ended_by TEXT NOT NULL DEFAULT ''
+    ) WITHOUT ROWID;
+    """,
 ]
 
 

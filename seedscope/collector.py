@@ -10,7 +10,7 @@ import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
 
-from . import db, settings
+from . import db, settings, throttle
 from .config import Config
 from .qbit import QbitAuthError, QbitClient, QbitError
 
@@ -78,6 +78,7 @@ class LiveState:
     last_full_success: int = 0
     last_manual_request: float = 0.0
     force_prune: bool = False  # the user just agreed to a shorter retention
+    throttle_error: str = ""
 
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
@@ -88,6 +89,7 @@ class LiveState:
                 "last_success": self.last_success,
                 "last_error": self.last_error,
                 "last_full_success": self.last_full_success,
+                "throttle_error": self.throttle_error,
             }
 
     def request_full_collection(self, now: float, cooldown: float) -> bool:
@@ -248,7 +250,7 @@ class Collector:
         with self.state.lock:
             self.state.connection_status = str(server.get("connection_status") or "")
 
-    def poll_live(self, now: int) -> None:
+    def poll_live(self, now: int) -> list[dict[str, Any]]:
         active = self.client.torrents(active_only=True)
         rows = sorted(
             (
@@ -274,6 +276,18 @@ class Collector:
         with self.state.lock:
             self.state.active = rows
             self.state.active_ts = now
+        return active
+
+    def adjust_throttle(self, active: list[dict[str, Any]], now: int) -> None:
+        """Adjust the upload limit; a failure here must never stop the statistics."""
+        try:
+            throttle.step(self.conn, self.client, active, now)
+            error = ""
+        except QbitError as exc:
+            error = str(exc)
+            log.warning("Bridage : %s", exc)
+        with self.state.lock:
+            self.state.throttle_error = error
 
     def poll_torrents(self, now: int) -> None:
         torrents = self.client.torrents()
@@ -429,7 +443,7 @@ class Collector:
 
     def tick(self, now: int, include_torrents: bool) -> None:
         self.poll_global(now)
-        self.poll_live(now)
+        self.adjust_throttle(self.poll_live(now), now)
         if include_torrents:
             self.poll_torrents(now)
         if self.state.take_force_prune() or now - self._last_prune >= PRUNE_INTERVAL:
@@ -475,6 +489,14 @@ class Collector:
                 continue
             self.state.wake.wait(max(1.0, wait - (time.time() - started)))
             self.state.wake.clear()
+        self.release_throttle()
+
+    def release_throttle(self) -> None:
+        """Never leave qBittorrent throttled while SeedScope is not running."""
+        try:
+            throttle.release_now(self.conn, self.client, int(time.time()))
+        except (QbitError, sqlite3.Error) as exc:
+            log.warning("Bridage non levé à l'arrêt : %s", exc)
 
     def _record_error(self, message: str) -> None:
         log.warning("%s", message)

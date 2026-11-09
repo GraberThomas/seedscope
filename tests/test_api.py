@@ -352,6 +352,36 @@ class SettingsApiTest(unittest.TestCase):
         self.assertTrue(self.state.wake.is_set())
         self.assertEqual(self.current()["torrent_interval"], 600)
 
+    def post_throttle(self, payload, origin=None):
+        headers = {"Content-Type": "application/json"}
+        if origin:
+            headers["Origin"] = origin
+        request = urllib.request.Request(
+            self.base + "/api/settings/throttle", data=json.dumps(payload).encode(), headers=headers
+        )
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status
+        except urllib.error.HTTPError as exc:
+            return exc.code
+
+    def test_throttle_is_off_by_default_and_can_be_enabled(self):
+        current = self.current()
+        self.assertFalse(current["throttle"]["enabled"])
+        self.assertIn(1048576, current["throttle_limit_options"])
+        valid = {"enabled": True, "limit": 1048576, "delay": 300}
+        self.assertEqual(self.post_throttle({**valid, "limit": 7}), 400)
+        self.assertEqual(self.post_throttle(valid, origin="http://evil.example"), 403)
+        self.assertFalse(self.current()["throttle"]["enabled"])
+        self.assertEqual(self.post_throttle(valid), 200)
+        self.assertTrue(self.state.wake.is_set())
+        self.assertEqual(self.current()["throttle"], valid)
+        with urllib.request.urlopen(self.base + "/api/throttle") as response:
+            status = json.load(response)
+        self.assertTrue(status["enabled"])
+        self.assertFalse(status["active"])
+        self.assertEqual(status["events"], [])
+
     def post_retention(self, payload, origin=None):
         headers = {"Content-Type": "application/json"}
         if origin:

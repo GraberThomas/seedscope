@@ -4,7 +4,8 @@
 
 SeedScope remplace une pile Prometheus + Grafana par un seul conteneur, pensé pour un NAS : environ 20 Mio de RAM,
 aucune dépendance Python et une interface prête à l'emploi. Il suit chaque cross-seed séparément, puis les additionne
-par contenu. Il se contente de lire qBittorrent et n'y modifie jamais rien.
+par contenu. Il se contente de lire qBittorrent, sauf si vous activez le bridage de l'envoi pendant les téléchargements :
+il ne touche alors qu'à la limite d'envoi globale, jamais aux torrents.
 
 ![Page d'aperçu : ratio, débits en cours, stats de la période et courbes](docs/apercu.png)
 
@@ -34,13 +35,13 @@ par contenu. Il se contente de lire qBittorrent et n'y modifie jamais rien.
 | Page | Ce qu'on y trouve |
 |---|---|
 | **Aperçu** | Ratio global, envoi et réception en cours, totaux, débit moyen et pic de la période, courbes de débit et de ratio, upload cumulé, contenus qui ont le plus envoyé |
-| **Activité** | Transferts en cours, filtrés par sens, avec progression et temps restant ; calendrier annuel de l'upload ; heures les plus actives |
+| **Activité** | Transferts en cours, filtrés par sens, avec progression et temps restant ; état et historique du bridage ; calendrier annuel de l'upload ; heures les plus actives |
 | **Contenus** | Stats tous trackers confondus, recherche, filtres, tri et mini-courbe sur 30 jours ; une page par contenu avec ses courbes par tracker |
 | **Torrents** | Même tableau par torrent, supprimés inclus ; une page par torrent avec upload, ratio, popularité, seeders et leechers |
 | **Popularité** | Les plus populaires, les plus demandés et les moins seedés, par contenu ou par torrent ; moyenne par tracker |
 | **Trackers** | Upload dans le temps, part de chacun, volume et ratio, par tracker ou par catégorie |
 | **Rentabilité** | Upload rapporté à l'espace occupé, et poids morts selon un seuil d'inactivité. SeedScope suggère, mais ne supprime rien |
-| **Paramètres** | Mode et palette de couleurs, durée affichée à l'ouverture, fréquences de collecte et conservation des données |
+| **Paramètres** | Mode et palette de couleurs, durée affichée à l'ouverture, fréquences de collecte, bridage pendant les téléchargements et conservation des données |
 
 Sur toutes les pages :
 
@@ -103,6 +104,21 @@ Elles se règlent dans la page **Paramètres** et s'appliquent immédiatement.
 |---|---|---|
 | Stats globales et transferts en cours | 1 min | 30 s, 1, 2 ou 5 min |
 | Détail par torrent | 5 min | 1, 5, 10, 15, 30 min ou 1 h |
+
+### Bridage pendant les téléchargements
+
+Désactivé par défaut, il s'active dans la page **Paramètres**. Dès qu'un torrent reçoit vraiment des données (un torrent
+bloqué ou en file d'attente ne compte pas), SeedScope abaisse la **limite d'envoi globale normale** de qBittorrent, de
+256 Kio/s à 20 Mio/s au choix. Quand plus rien ne télécharge pendant le délai choisi (1 min à 30 min, 2 min par défaut),
+il remet la limite d'origine. Le seed continue, simplement moins vite.
+
+- Les **limites alternatives** (la tortue) et les torrents ne sont jamais modifiés.
+- Une limite d'origine **déjà plus basse** est gardée telle quelle.
+- Une limite **changée à la main** pendant un bridage est respectée : SeedScope s'efface jusqu'à la fin des téléchargements.
+- À l'**arrêt** du conteneur, et dès que l'option est désactivée, la limite d'origine est remise.
+- La réaction suit la fréquence des stats globales : 1 min par défaut.
+
+L'état en cours et les dernières périodes bridées s'affichent dans la page **Activité**.
 
 ### Conservation des données
 
@@ -192,6 +208,8 @@ docker run --rm --network <reseau-de-prometheus> -v seedscope_seedscope-data:/da
 | `GET /api/popularity`, `/api/calendar`, `/api/heatmap`, `/api/filters` | Vues spécialisées |
 | `GET` ou `POST /api/settings` | Lire les réglages, modifier les fréquences de collecte |
 | `POST /api/settings/retention` | Modifier la conservation : répond `409` tant que `confirm_delete` n'est pas à `true` si une durée raccourcit |
+| `POST /api/settings/throttle` | Activer le bridage, choisir la limite et le délai |
+| `GET /api/throttle` | État du bridage et dernières périodes |
 | `POST /api/collect` | Demander une collecte immédiate |
 | `GET /healthz` | État du service |
 
@@ -224,7 +242,8 @@ docker run --rm --network <reseau-de-prometheus> -v seedscope_seedscope-data:/da
 > changer les réglages, **y compris confirmer la suppression d'un historique**, et lancer une collecte. Publiez-la
 > uniquement sur un réseau de confiance, jamais sur Internet.
 
-- **qBittorrent** : le client n'envoie aucune autre requête d'écriture que la connexion.
+- **qBittorrent** : en dehors de la connexion, la seule écriture possible est la limite d'envoi globale, et seulement si
+  le bridage est activé. Aucune méthode du client ne peut modifier un torrent.
 - **Passkeys** : les URL d'annonce en contiennent une, donc seul le nom d'hôte du tracker est conservé.
 - **Écritures** : seules des valeurs prédéfinies sont acceptées, les requêtes venant d'un autre site sont refusées, et une
   collecte manuelle au plus est possible toutes les 10 secondes.
@@ -237,7 +256,8 @@ docker run --rm --network <reseau-de-prometheus> -v seedscope_seedscope-data:/da
 
 ```mermaid
 flowchart LR
-    Q[qBittorrent] -- lecture seule --> C[Collecteur]
+    Q[qBittorrent] -- lecture --> C[Collecteur]
+    C -.->|"limite d'envoi, si bridage"| Q
     C --> D[(SQLite)]
     D --> W[Serveur web]
     W --> I[Interface]
@@ -246,7 +266,8 @@ flowchart LR
 
 | Fichier | Rôle |
 |---|---|
-| `seedscope/qbit.py` | Client de l'API qBittorrent, en lecture seule |
+| `seedscope/qbit.py` | Client de l'API qBittorrent : lecture, et limite d'envoi globale |
+| `seedscope/throttle.py` | Bridage de l'envoi pendant les téléchargements |
 | `seedscope/collector.py` | Boucle de collecte, calcul des écarts, agrégats et purge |
 | `seedscope/db.py` | Schéma SQLite et migrations |
 | `seedscope/settings.py` | Réglages modifiables depuis l'interface |
@@ -263,6 +284,7 @@ flowchart LR
 | `torrent_daily` | Upload et download par torrent et par jour | Toujours gardée |
 | `torrent_samples` | Upload, ratio, popularité et pairs par torrent | Mesures fines et horaires illimitées par défaut, réglables ; une par jour toujours gardée |
 | `torrents` | Dernier état de chaque torrent, supprimés inclus | Toujours gardée |
+| `throttle_events` | Périodes de bridage de l'envoi | Toujours gardée |
 
 Une mesure par torrent n'est enregistrée que si une valeur a changé, et au moins une fois par heure.
 

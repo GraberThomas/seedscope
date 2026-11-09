@@ -1,7 +1,7 @@
-"""Read-only client for the qBittorrent WebUI API.
+"""Client for the qBittorrent WebUI API.
 
-The only POST this client ever sends is the login. It exposes no method able to
-change a torrent or a setting.
+Apart from the login, the only write it can send is the global upload limit, used by the
+optional throttling during downloads. It exposes no method able to change a torrent.
 """
 
 from __future__ import annotations
@@ -55,17 +55,20 @@ class QbitClient:
         self._rid = 0
         self._server_state = {}
 
-    def _get(self, path: str, retry_login: bool = True) -> Any:
+    def _request(self, path: str, retry_login: bool = True, data: bytes | None = None) -> Any:
         request = urllib.request.Request(
-            f"{self._base}{path}", headers={"Referer": self._base}
+            f"{self._base}{path}", data=data, headers={"Referer": self._base}
         )
         try:
             with self._opener.open(request, timeout=self._timeout) as response:
+                if data is not None:
+                    response.read(1024)
+                    return None
                 return json.load(response)
         except urllib.error.HTTPError as exc:
             if exc.code in (401, 403) and retry_login:
                 self.login()
-                return self._get(path, retry_login=False)
+                return self._request(path, retry_login=False, data=data)
             if exc.code in (401, 403):
                 raise QbitAuthError(f"acces refuse (HTTP {exc.code})") from None
             raise QbitError(f"{path.split('?')[0]} : HTTP {exc.code}") from None
@@ -79,7 +82,7 @@ class QbitClient:
         answer lists every torrent; later ones only hold what changed, so fields are
         merged into a persistent state.
         """
-        data = self._get(f"/api/v2/sync/maindata?rid={self._rid}")
+        data = self._request(f"/api/v2/sync/maindata?rid={self._rid}")
         if data.get("full_update"):
             self._server_state = {}
         self._server_state.update(data.get("server_state") or {})
@@ -88,4 +91,17 @@ class QbitClient:
 
     def torrents(self, active_only: bool = False) -> list[dict[str, Any]]:
         suffix = "?filter=active" if active_only else ""
-        return self._get(f"/api/v2/torrents/info{suffix}")
+        return self._request(f"/api/v2/torrents/info{suffix}")
+
+    def upload_limit(self) -> int:
+        """Global upload limit in bytes per second, 0 meaning unlimited.
+
+        Read from the preferences: it is the normal limit even while the alternative
+        limits are on, unlike ``transfer/uploadLimit``.
+        """
+        return int(self._request("/api/v2/app/preferences").get("up_limit") or 0)
+
+    def set_upload_limit(self, limit: int) -> None:
+        """Change the normal global upload limit only; the alternative limits are untouched."""
+        body = urllib.parse.urlencode({"json": json.dumps({"up_limit": max(0, int(limit))})})
+        self._request("/api/v2/app/setPreferences", data=body.encode())

@@ -377,7 +377,7 @@ async function overview() {
 }
 
 async function activity() {
-  const [live, cal, heat] = await Promise.all([api('/api/live'), api('/api/calendar'), api('/api/heatmap')]);
+  const [live, cal, heat, throttle] = await Promise.all([api('/api/live'), api('/api/calendar'), api('/api/heatmap'), api('/api/throttle')]);
   const uploading = live.rows.filter((row) => row.up_speed > 0);
   const downloading = live.rows.filter((row) => row.dl_speed > 0);
   const transferring = live.rows.filter((row) => row.up_speed > 0 || row.dl_speed > 0);
@@ -436,6 +436,7 @@ async function activity() {
       ], direction, (value) => { ui.liveDirection = value; render(); }),
       scopeFilter(ui.liveScope, (value) => { ui.liveScope = value; render(); })),
     card('Transferts en cours', live.ts ? `Mis à jour ${ago(live.ts)}` : null, liveTable),
+    throttleCard(throttle),
     card('Upload par jour', cal.days.length ? `Depuis le ${shortDay(cal.start)}` : null,
       calendarChart({ ...cal, format: bytes, formatDay: dayLabel, empty: NO_DATA }),
       tableView(
@@ -453,6 +454,27 @@ async function activity() {
         }),
       )),
   ];
+}
+
+const ENDED_BY = { idle: 'Téléchargements terminés', manual: 'Limite changée à la main', disabled: 'Option désactivée', stopped: 'Arrêt de SeedScope', '': 'En cours' };
+const timeOf = (ts) => new Date(ts * 1000).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' });
+
+function throttleCard(status) {
+  if (!status.enabled && !status.events.length) return null;
+  let line;
+  if (!status.enabled) line = 'Option désactivée : SeedScope ne modifie pas la limite d’envoi.';
+  else if (status.active) line = `🐢 Envoi bridé à ${speed(status.limit)} depuis ${timeOf(status.events[0].start)}, car un torrent télécharge.`;
+  else if (status.held) line = 'En retrait : la limite a été changée à la main pendant un téléchargement. SeedScope reprendra au prochain.';
+  else line = `En veille : l’envoi sera bridé à ${speed(status.limit)} dès qu’un torrent téléchargera.`;
+  return card('Bridage pendant les téléchargements', `7 derniers jours : ${status.week_seconds ? duration(status.week_seconds) : 'jamais'} bridé`,
+    h('p', { class: `throttle-state${status.active ? ' on' : ''}`, role: 'status', text: line }),
+    status.error ? h('p', { class: 'subtle', text: `⚠ ${status.error}` }) : null,
+    status.events.length ? dataTable([
+      { key: 'start', label: 'Début', order: -1, format: timeOf },
+      { key: 'length', label: 'Durée', num: true, format: (value) => (value < 60 ? '< 1 min' : duration(value)) },
+      { key: 'up_limit', label: 'Limite', num: true, format: speed },
+      { key: 'ended_by', label: 'Fin', format: (value) => ENDED_BY[value] ?? value },
+    ], status.events.map((event) => ({ ...event, length: (event.end ?? Date.now() / 1000) - event.start }))) : null);
 }
 
 async function torrentsPage() {
@@ -978,6 +1000,45 @@ function intervalsCard(current) {
       message));
 }
 
+function throttleSettingsCard(current) {
+  const chosen = { ...current.throttle };
+  const message = h('span', { class: 'subtle', role: 'status' });
+  const save = async () => {
+    message.textContent = 'Enregistrement…';
+    try {
+      const response = await fetch('/api/settings/throttle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(chosen),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+      message.textContent = chosen.enabled ? '✓ Enregistré, actif dès la prochaine collecte.' : '✓ Désactivé : la limite d’origine est remise si besoin.';
+    } catch (error) {
+      message.textContent = `⚠ Échec : ${error.message}`;
+    }
+  };
+  const delayName = (seconds) => (seconds < 3600 ? `${seconds / 60} min` : '1 h');
+  return h('section', { class: 'card settings' },
+    h('div', { class: 'card-head' }, h('h2', { text: 'Bridage pendant les téléchargements' })),
+    h('p', { class: 'note', text: 'Quand un torrent télécharge, SeedScope abaisse la limite d’envoi globale de qBittorrent pour laisser la priorité à la réception, puis remet ta limite d’origine. Le seed continue, juste moins vite. Les limites alternatives (la tortue) ne sont pas touchées, et une limite changée à la main dans qBittorrent est toujours respectée.' }),
+    h('div', { class: 'setting' },
+      h('span', { class: 'field', text: 'Bridage' }),
+      segmented('Bridage pendant les téléchargements', [['off', 'Désactivé'], ['on', 'Activé']], chosen.enabled ? 'on' : 'off', (value) => {
+        chosen.enabled = value === 'on';
+        save().then(render);
+      })),
+    h('div', { class: 'setting' },
+      select('Limite d’envoi pendant un téléchargement', current.throttle_limit_options.map((value) => [String(value), speed(value)]), String(chosen.limit), (value) => { chosen.limit = Number(value); }),
+      h('p', { class: 'subtle', text: 'Si ta limite habituelle est déjà plus basse, elle est gardée.' })),
+    h('div', { class: 'setting' },
+      select('Retour à la normale après', current.throttle_delay_options.map((value) => [String(value), delayName(value)]), String(chosen.delay), (value) => { chosen.delay = Number(value); }),
+      h('p', { class: 'subtle', text: 'Sans téléchargement pendant ce délai, la limite d’origine est remise. Évite d’alterner sans cesse entre deux torrents.' })),
+    h('div', { class: 'filters' },
+      h('button', { class: 'ghost', type: 'button', text: 'Enregistrer', onclick: save }),
+      message));
+}
+
 function retentionCard(current) {
   const chosen = { ...current.retention };
   const options = current.retention_options.map((days) => [String(days), retentionName(days)]);
@@ -1036,6 +1097,7 @@ async function settingsPage() {
     h('h1', { text: 'Paramètres' }),
     appearanceCard(),
     intervalsCard(current),
+    throttleSettingsCard(current),
     retentionCard(current),
   ];
 }

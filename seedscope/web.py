@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlsplit
 
-from . import __version__, db, queries, settings, throttle
+from . import __version__, accounts, db, queries, settings, throttle
 from .collector import LiveState
 from .config import Config
 
@@ -64,8 +64,13 @@ class Params:
 
 
 def make_handler(
-    config: Config, state: LiveState, clock: Callable[[], float]
+    config: Config,
+    state: LiveState,
+    clock: Callable[[], float],
+    accounts_state: accounts.AccountsState | None = None,
 ) -> type[BaseHTTPRequestHandler]:
+    accounts_state = accounts_state or accounts.AccountsState()
+
     def api_summary(conn: sqlite3.Connection, params: Params, now: int) -> Any:
         return {
             **queries.summary(conn, now, state.snapshot()),
@@ -159,6 +164,19 @@ def make_handler(
     def api_throttle(conn: sqlite3.Connection, params: Params, now: int) -> Any:
         return {**throttle.status(conn, now), "error": state.snapshot()["throttle_error"]}
 
+    def api_accounts(conn: sqlite3.Connection, params: Params, now: int) -> Any:
+        range_key = params.text("range", "30d")
+        if range_key not in queries.RANGES:
+            raise queries.BadRequest(f"Periode inconnue : {range_key}")
+        seconds = queries.RANGES[range_key]
+        return accounts.overview(
+            conn,
+            config.account_keys,
+            accounts_state.snapshot(),
+            None if seconds is None else now - seconds,
+            config.account_interval,
+        )
+
     routes: dict[str, Callable[[sqlite3.Connection, Params, int], Any]] = {
         "/api/summary": api_summary,
         "/api/timeseries": api_timeseries,
@@ -174,6 +192,7 @@ def make_handler(
         "/api/popularity": api_popularity,
         "/api/settings": api_settings,
         "/api/throttle": api_throttle,
+        "/api/accounts": api_accounts,
     }
 
     class Handler(BaseHTTPRequestHandler):
@@ -372,8 +391,13 @@ def make_handler(
 
 
 def make_server(
-    config: Config, state: LiveState, clock: Callable[[], float] = time.time
+    config: Config,
+    state: LiveState,
+    clock: Callable[[], float] = time.time,
+    accounts_state: accounts.AccountsState | None = None,
 ) -> ThreadingHTTPServer:
-    server = ThreadingHTTPServer((config.host, config.port), make_handler(config, state, clock))
+    server = ThreadingHTTPServer(
+        (config.host, config.port), make_handler(config, state, clock, accounts_state)
+    )
     server.daemon_threads = True
     return server

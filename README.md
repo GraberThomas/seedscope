@@ -40,6 +40,7 @@ il ne touche alors qu'à la limite d'envoi globale, jamais aux torrents.
 | **Torrents** | Même tableau par torrent, supprimés inclus ; une page par torrent avec upload, ratio, popularité, seeders et leechers |
 | **Popularité** | Les plus populaires, les plus demandés et les moins seedés, par contenu ou par torrent ; moyenne par tracker |
 | **Trackers** | Upload dans le temps, part de chacun, volume et ratio, par tracker ou par catégorie |
+| **Comptes** | Ratio, envoyé, reçu, marge, bonus et seeds tels que chaque tracker les compte, lus sur son API, avec leurs courbes : un bloc par tracker |
 | **Rentabilité** | Upload rapporté à l'espace occupé, et poids morts selon un seuil d'inactivité. SeedScope suggère, mais ne supprime rien |
 | **Paramètres** | Mode et palette de couleurs, durée affichée à l'ouverture, fréquences de collecte, bridage pendant les téléchargements et conservation des données |
 
@@ -95,6 +96,28 @@ L'interface répond sur `http://<ip-du-serveur>:3310/`. Les premières données 
 | `TZ` | Fuseau utilisé pour découper les jours | `Europe/Paris` |
 
 Les passkeys ne servent à rien ici : donnez seulement les noms d'hôtes aux alias.
+
+### Comptes sur les trackers
+
+Facultatif. La page **Comptes** lit les chiffres de votre compte sur le site de chaque tracker : ratio, envoyé, reçu,
+bonus... Ils diffèrent de ceux de qBittorrent, car le tracker compte aussi le freeleech, les bonus et vos autres clients.
+Seuls les trackers qui ont une clé sont interrogés, chacun leur tour, une fois par heure.
+
+| Variable | Tracker | Requête |
+|---|---|---|
+| `SEEDSCOPE_ACCOUNT_GEMINI_KEY` | Gemini | `GET /api/user`, jeton en en-tête `Authorization: Bearer` |
+| `SEEDSCOPE_ACCOUNT_TR4KER_KEY` | TR4KER | `GET /api/me?apikey=…` (la clé Torznab suffit) |
+| `SEEDSCOPE_ACCOUNT_V3X_KEY` | V3X | `GET https://api.v3x.club/api/me`, en-tête `Bearer` |
+| `SEEDSCOPE_ACCOUNT_C411_KEY` | C411 | `GET /api/user/profile`, en-tête `Bearer` : il faut une clé autorisant la lecture du profil, la clé Torznab ne suffit pas |
+| `SEEDSCOPE_ACCOUNT_PROXY` | tous | Proxy HTTP de sortie, par exemple celui de gluetun (`http://gluetun:8888`) pour passer par le VPN. Vide : connexion directe |
+| `SEEDSCOPE_ACCOUNT_INTERVAL` | tous | Fréquence en secondes, 900 au minimum (`3600` par défaut) |
+
+- **Ce qui est gardé** : seulement une liste fixe de chiffres. Les réponses contiennent aussi passkey, clé API ou adresse
+  e-mail : ils ne sont jamais enregistrés, et les clés n'apparaissent ni dans les journaux ni dans l'interface.
+- **Ratio** : TR4KER et C411 n'en donnent pas, il est calculé (envoyé / reçu, crédit d'envoi compris sur C411). Le ratio
+  avec les bonus de TR4KER et celui sans crédit de C411 sont affichés à côté.
+- **Proxy** : sans connexion au proxy, la lecture échoue et l'erreur s'affiche ; SeedScope ne repasse jamais en direct.
+  Pour joindre gluetun, le conteneur doit être sur son réseau Docker, par exemple avec un `compose.override.yaml` local.
 
 ### Fréquences de collecte
 
@@ -210,6 +233,7 @@ docker run --rm --network <reseau-de-prometheus> -v seedscope_seedscope-data:/da
 | `POST /api/settings/retention` | Modifier la conservation : répond `409` tant que `confirm_delete` n'est pas à `true` si une durée raccourcit |
 | `POST /api/settings/throttle` | Activer le bridage, choisir la limite et le délai |
 | `GET /api/throttle` | État du bridage et dernières périodes |
+| `GET /api/accounts?range=30d` | Chiffres des comptes sur les trackers, évolution sur la période et courbes |
 | `POST /api/collect` | Demander une collecte immédiate |
 | `GET /healthz` | État du service |
 
@@ -217,7 +241,7 @@ docker run --rm --network <reseau-de-prometheus> -v seedscope_seedscope-data:/da
 
 - **Historique** : les courbes partent du début de la collecte. Les totaux antérieurs de qBittorrent servent de point
   de départ, sans créer de faux pic.
-- **Ratio** : c'est celui de qBittorrent. Il peut différer de celui affiché par les trackers.
+- **Ratio** : c'est celui de qBittorrent. Il peut différer de celui affiché par les trackers, que montre la page **Comptes**.
 - **Popularité** : c'est la valeur de qBittorrent, soit le ratio divisé par le nombre de mois actifs. Elle mesure ce qui a
   tourné pour vous. Les leechers annoncés reflètent mieux la demande actuelle.
 - **Contenus** : les torrents d'au moins 50 Mio sont regroupés par taille exacte en octets, ce qui peut rarement réunir
@@ -259,6 +283,8 @@ flowchart LR
     Q[qBittorrent] -- lecture --> C[Collecteur]
     C -.->|"limite d'envoi, si bridage"| Q
     C --> D[(SQLite)]
+    T[Sites des trackers] -- "lecture, 1 fois par heure" --> P[Comptes]
+    P --> D
     D --> W[Serveur web]
     W --> I[Interface]
     W --> A[API JSON]
@@ -267,6 +293,7 @@ flowchart LR
 | Fichier | Rôle |
 |---|---|
 | `seedscope/qbit.py` | Client de l'API qBittorrent : lecture, et limite d'envoi globale |
+| `seedscope/accounts.py` | Lecture des comptes sur l'API de chaque tracker |
 | `seedscope/throttle.py` | Bridage de l'envoi pendant les téléchargements |
 | `seedscope/collector.py` | Boucle de collecte, calcul des écarts, agrégats et purge |
 | `seedscope/db.py` | Schéma SQLite et migrations |
@@ -285,6 +312,7 @@ flowchart LR
 | `torrent_samples` | Upload, ratio, popularité et pairs par torrent | Mesures fines et horaires illimitées par défaut, réglables ; une par jour toujours gardée |
 | `torrents` | Dernier état de chaque torrent, supprimés inclus | Toujours gardée |
 | `throttle_events` | Périodes de bridage de l'envoi | Toujours gardée |
+| `account_samples` | Chiffres des comptes sur les trackers, une mesure par lecture | Toujours gardée |
 
 Une mesure par torrent n'est enregistrée que si une valeur a changé, et au moins une fois par heure.
 

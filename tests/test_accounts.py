@@ -86,6 +86,8 @@ class ParseTest(unittest.TestCase):
         self.assertAlmostEqual(sample.ratio, 2.593, places=3)
         self.assertAlmostEqual(extras(sample)["Ratio sans crédit"], 1.732, places=3)
         self.assertEqual(sample.bonus, 259)
+        # The site shows a 377 GiB buffer.
+        self.assertAlmostEqual(sample.buffer / GIB, 377.3, places=1)
 
     def test_nothing_downloaded_gives_no_ratio(self):
         self.assertIsNone(accounts.parse_c411({"transfer": {"uploaded": {"total": 10}, "downloaded": {"total": 0}}}).ratio)

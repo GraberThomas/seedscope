@@ -83,6 +83,13 @@ def _ratio(uploaded: int | None, downloaded: int | None) -> float | None:
     return uploaded / downloaded
 
 
+def _buffer(uploaded: int | None, downloaded: int | None, min_ratio: float) -> int | None:
+    """What can still be downloaded before the ratio falls under the site's minimum."""
+    if uploaded is None or downloaded is None:
+        return None
+    return int(uploaded / min_ratio) - downloaded
+
+
 def _dig(data: Any, *path: str) -> Any:
     for key in path:
         if not isinstance(data, Mapping):
@@ -178,8 +185,12 @@ def parse_v3x(data: Mapping[str, Any]) -> AccountSample:
     )
 
 
+# Not in the API: deduced from the buffer the site shows (377 GiB = 436.49 / 0.8 - 168.33).
+C411_MIN_RATIO = 0.8
+
+
 def parse_c411(data: Mapping[str, Any]) -> AccountSample:
-    """C411 ``/api/user/profile``: real transfer plus credit, no ratio."""
+    """C411 ``/api/user/profile``: real transfer plus credit, no ratio nor buffer."""
     uploaded = _integer(_dig(data, "transfer", "uploaded", "total"))
     downloaded = _integer(_dig(data, "transfer", "downloaded", "total"))
     up_actual = _integer(_dig(data, "transfer", "uploaded", "actual"))
@@ -188,11 +199,13 @@ def parse_c411(data: Mapping[str, Any]) -> AccountSample:
         uploaded=uploaded,
         downloaded=downloaded,
         ratio=_ratio(uploaded, downloaded),
+        buffer=_buffer(uploaded, downloaded, C411_MIN_RATIO),
         bonus=_number(_dig(data, "zen", "balance")),
         extras=(
             Extra("Ratio sans crédit", "ratio", _ratio(up_actual, down_actual)),
             Extra("Envoyé réellement", "bytes", up_actual),
             Extra("Crédit d’envoi", "bytes", _integer(_dig(data, "transfer", "uploaded", "credit"))),
+            Extra("Ratio minimum", "ratio", C411_MIN_RATIO),
             Extra("Niveau", "count", _integer(_dig(data, "level", "level"))),
         ),
     )

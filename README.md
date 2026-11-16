@@ -116,7 +116,8 @@ Seuls les trackers qui ont une clé sont interrogés, chacun leur tour, une fois
   e-mail : ils ne sont jamais enregistrés, et les clés n'apparaissent ni dans les journaux ni dans l'interface.
 - **Ratio** : TR4KER et C411 n'en donnent pas, il est calculé comme sur leur site : envoyé / reçu, bonus compris sur
   TR4KER, crédit d'envoi compris sur C411. Les chiffres réels, sans bonus ni crédit, sont affichés à côté. Sur TR4KER, la
-  marge est l'envoyé moins le reçu.
+  marge est l'envoyé moins le reçu ; sur C411, c'est l'envoyé divisé par le ratio minimum de 0,8, moins le reçu,
+  comme sur le site.
 - **Proxy** : sans connexion au proxy, la lecture échoue et l'erreur s'affiche ; SeedScope ne repasse jamais en direct.
   Pour joindre gluetun, le conteneur doit être sur son réseau Docker, par exemple avec un `compose.override.yaml` local.
 

@@ -449,3 +449,10 @@ th button:hover { color: var(--ink); }
 .danger { color: var(--bad); border-color: var(--bad); font-weight: 600; }
 .back { color: var(--ink-2); font-size: 13px; text-decoration: none; }
 .back:hover { text-decoration: underline; }
+
+/* Tracker accounts: one card per tracker, with its figures inside. */
+.account { display: grid; gap: 14px; }
+.account .card-head { margin-bottom: 0; }
+.account .card-head h2 { font-size: 18px; }
+.account .card { background: var(--wash); border-color: transparent; }
+.account h3 { font-size: 13px; font-weight: 600; color: var(--ink-2); margin-bottom: 6px; }

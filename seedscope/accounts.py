@@ -130,21 +130,27 @@ def parse_gemini(data: Mapping[str, Any]) -> AccountSample:
 
 
 def parse_tr4ker(data: Mapping[str, Any]) -> AccountSample:
-    """TR4KER ``/api/me``: raw bytes, no ratio, bonus counters kept apart."""
-    uploaded = _integer(data.get("uploaded"))
-    downloaded = _integer(data.get("downloaded"))
+    """TR4KER ``/api/me``: raw bytes and bonus counters apart, no ratio.
+
+    The site adds the bonus to the transfer it shows (6.89 TiB = real upload + bonus),
+    so the official figures are the sums; the real ones are kept as extras.
+    """
+    real_up = _integer(data.get("uploaded"))
+    real_down = _integer(data.get("downloaded"))
     bonus_up = _integer(data.get("bonus_upload"))
     bonus_down = _integer(data.get("bonus_download"))
-    with_bonus = None
-    if uploaded is not None and downloaded is not None:
-        with_bonus = _ratio(uploaded + (bonus_up or 0), downloaded + (bonus_down or 0))
+    uploaded = None if real_up is None else real_up + (bonus_up or 0)
+    downloaded = None if real_down is None else real_down + (bonus_down or 0)
+    buffer = None if uploaded is None or downloaded is None else uploaded - downloaded
     return AccountSample(
         uploaded=uploaded,
         downloaded=downloaded,
         ratio=_ratio(uploaded, downloaded),
+        buffer=buffer,
         bonus=_number(data.get("money")),
         extras=(
-            Extra("Ratio avec les bonus", "ratio", with_bonus),
+            Extra("Ratio sans les bonus", "ratio", _ratio(real_up, real_down)),
+            Extra("Envoyé réellement", "bytes", real_up),
             Extra("Bonus d’envoi", "bytes", bonus_up),
             Extra("Bonus de réception", "bytes", bonus_down),
         ),

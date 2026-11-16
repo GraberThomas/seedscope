@@ -65,11 +65,15 @@ class ParseTest(unittest.TestCase):
         self.assertAlmostEqual(sample.bonus, 140042.11)
         self.assertEqual(extras(sample)["Hit and run"], 0)
 
-    def test_tr4ker_computes_both_ratios(self):
+    def test_tr4ker_counts_bonus_like_the_site(self):
         sample = accounts.parse_tr4ker(TR4KER)
-        self.assertAlmostEqual(sample.ratio, 1.508, places=3)
-        self.assertAlmostEqual(extras(sample)["Ratio avec les bonus"], 13.968, places=3)
-        self.assertIsNone(sample.buffer)
+        # The site shows 6.89 TiB uploaded and 505.04 GiB downloaded.
+        self.assertAlmostEqual(sample.uploaded / 2**40, 6.89, places=2)
+        self.assertAlmostEqual(sample.downloaded / GIB, 505.04, places=2)
+        self.assertAlmostEqual(sample.ratio, 13.968, places=3)
+        self.assertEqual(sample.buffer, sample.uploaded - sample.downloaded)
+        self.assertAlmostEqual(extras(sample)["Ratio sans les bonus"], 1.508, places=3)
+        self.assertEqual(extras(sample)["Envoyé réellement"], 816325878692)
 
     def test_v3x(self):
         sample = accounts.parse_v3x(V3X)
@@ -84,7 +88,7 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(sample.bonus, 259)
 
     def test_nothing_downloaded_gives_no_ratio(self):
-        self.assertIsNone(accounts.parse_tr4ker({"uploaded": 10, "downloaded": 0}).ratio)
+        self.assertIsNone(accounts.parse_c411({"transfer": {"uploaded": {"total": 10}, "downloaded": {"total": 0}}}).ratio)
 
 
 class FetchTest(unittest.TestCase):

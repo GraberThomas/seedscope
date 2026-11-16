@@ -1,4 +1,4 @@
-"""HTTP server: static interface and read-only JSON API."""
+"""HTTP server: static interface and JSON API."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlsplit
 
-from . import __version__, db, queries, settings
+from . import __version__, db, queries, settings, throttle
 from .collector import LiveState
 from .config import Config
 
@@ -151,7 +151,13 @@ def make_handler(
             "retention": asdict(settings.load_retention(conn)),
             "retention_options": settings.RETENTION_OPTIONS,
             "storage": settings.storage(conn, config.db_path),
+            "throttle": asdict(throttle.load(conn)),
+            "throttle_limit_options": throttle.LIMIT_OPTIONS,
+            "throttle_delay_options": throttle.DELAY_OPTIONS,
         }
+
+    def api_throttle(conn: sqlite3.Connection, params: Params, now: int) -> Any:
+        return {**throttle.status(conn, now), "error": state.snapshot()["throttle_error"]}
 
     routes: dict[str, Callable[[sqlite3.Connection, Params, int], Any]] = {
         "/api/summary": api_summary,
@@ -167,6 +173,7 @@ def make_handler(
         "/api/breakdown": api_breakdown,
         "/api/popularity": api_popularity,
         "/api/settings": api_settings,
+        "/api/throttle": api_throttle,
     }
 
     class Handler(BaseHTTPRequestHandler):
@@ -251,7 +258,7 @@ def make_handler(
 
         def do_POST(self) -> None:  # noqa: N802
             path = urlsplit(self.path).path
-            if path not in ("/api/settings", "/api/settings/retention", "/api/collect"):
+            if path not in ("/api/settings", "/api/settings/retention", "/api/settings/throttle", "/api/collect"):
                 self._json({"error": "Methode non autorisee"}, HTTPStatus.METHOD_NOT_ALLOWED)
                 return
             try:
@@ -262,9 +269,11 @@ def make_handler(
                     self._save_settings(body)
                 elif path == "/api/settings/retention":
                     self._save_retention(body)
+                elif path == "/api/settings/throttle":
+                    self._save_throttle(body)
                 else:
                     self._request_collection()
-            except settings.InvalidSetting as exc:
+            except (settings.InvalidSetting, throttle.InvalidThrottle) as exc:
                 self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             except (BrokenPipeError, ConnectionResetError):
                 pass
@@ -338,6 +347,16 @@ def make_handler(
             if names:
                 state.request_prune()
             self._json({"retention": asdict(new)})
+
+        def _save_throttle(self, body: dict[str, Any]) -> None:
+            value = throttle.validate(body)
+            conn = db.connect(config.db_path)
+            try:
+                throttle.save(conn, value)
+            finally:
+                conn.close()
+            state.wake.set()  # applied, or lifted, at once
+            self._json(asdict(value))
 
         def _request_collection(self) -> None:
             previous = state.snapshot()["last_full_success"]

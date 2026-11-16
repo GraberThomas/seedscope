@@ -291,6 +291,8 @@ main.loading { opacity: 0.6; }
 .card-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; margin-bottom: 12px; }
 .subtle { color: var(--muted); font-size: 12px; }
 .note { color: var(--ink-2); max-width: 75ch; }
+.throttle-state { margin: 0 0 12px; }
+.throttle-state.on { font-weight: 600; }
 .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(460px, 100%), 1fr)); gap: 16px; }
 
 .hero-row { display: grid; grid-template-columns: minmax(220px, 280px) minmax(0, 1fr); gap: 16px; }

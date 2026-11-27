@@ -120,6 +120,23 @@ MIGRATIONS = [
         ended_by TEXT NOT NULL DEFAULT ''
     ) WITHOUT ROWID;
     """,
+    """
+    -- Account figures read from each tracker's own API. NULL: the tracker does not give it.
+    -- extras: JSON list of tracker-specific figures ({label, kind, value}).
+    CREATE TABLE account_samples (
+        tracker TEXT NOT NULL,
+        ts INTEGER NOT NULL,
+        uploaded INTEGER,
+        downloaded INTEGER,
+        ratio REAL,
+        buffer INTEGER,
+        seeding INTEGER,
+        leeching INTEGER,
+        bonus REAL,
+        extras TEXT NOT NULL DEFAULT '[]',
+        PRIMARY KEY (tracker, ts)
+    ) WITHOUT ROWID;
+    """,
 ]
 
 

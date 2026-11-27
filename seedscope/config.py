@@ -36,6 +36,28 @@ def _positive_int(env: Mapping[str, str], name: str, default: int) -> int:
     return value
 
 
+ACCOUNT_TRACKERS = ("gemini", "tr4ker", "v3x", "c411")
+MIN_ACCOUNT_INTERVAL = 900
+
+
+def parse_account_keys(env: Mapping[str, str]) -> dict[str, str]:
+    """API keys of the tracker accounts to follow; trackers without a key are skipped."""
+    keys = {}
+    for tracker in ACCOUNT_TRACKERS:
+        value = env.get(f"SEEDSCOPE_ACCOUNT_{tracker.upper()}_KEY", "").strip()
+        if value:
+            keys[tracker] = value
+    return keys
+
+
+def _account_interval(env: Mapping[str, str]) -> int:
+    value = _positive_int(env, "SEEDSCOPE_ACCOUNT_INTERVAL", 3600)
+    if value < MIN_ACCOUNT_INTERVAL:
+        # Trackers rate-limit their API: never ask more than every 15 minutes.
+        raise ConfigError(f"SEEDSCOPE_ACCOUNT_INTERVAL doit valoir au moins {MIN_ACCOUNT_INTERVAL}")
+    return value
+
+
 @dataclass(frozen=True)
 class Config:
     qbt_url: str
@@ -47,6 +69,10 @@ class Config:
     global_interval: int = 60
     torrent_interval: int = 300
     tracker_aliases: Mapping[str, str] = field(default_factory=dict)
+    # Tracker key -> API key, read from SEEDSCOPE_ACCOUNT_<TRACKER>_KEY.
+    account_keys: Mapping[str, str] = field(default_factory=dict, repr=False)
+    account_proxy: str | None = None
+    account_interval: int = 3600
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Config":
@@ -68,4 +94,7 @@ class Config:
             global_interval=_positive_int(env, "SEEDSCOPE_GLOBAL_INTERVAL", 60),
             torrent_interval=_positive_int(env, "SEEDSCOPE_TORRENT_INTERVAL", 300),
             tracker_aliases=parse_aliases(env.get("SEEDSCOPE_TRACKER_ALIASES", "")),
+            account_keys=parse_account_keys(env),
+            account_proxy=env.get("SEEDSCOPE_ACCOUNT_PROXY") or None,
+            account_interval=_account_interval(env),
         )

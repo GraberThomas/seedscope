@@ -8,6 +8,7 @@ import sys
 import threading
 
 from . import __version__, db
+from .accounts import AccountPoller, AccountsState
 from .collector import Collector, LiveState
 from .config import Config, ConfigError
 from .qbit import QbitClient
@@ -26,12 +27,17 @@ def main() -> int:
     conn = db.connect(config.db_path)
     client = QbitClient(config.qbt_url, config.qbt_username, config.qbt_password)
     collector = Collector(config, client, conn, state)
-    server = make_server(config, state)
+    accounts_state = AccountsState()
+    poller = AccountPoller(
+        config.db_path, config.account_keys, config.account_proxy, config.account_interval, accounts_state
+    )
+    server = make_server(config, state, accounts_state=accounts_state)
 
     stop = threading.Event()
     def shutdown(*_: object) -> None:
         stop.set()
         state.wake.set()
+        accounts_state.wake.set()
         threading.Thread(target=server.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGTERM, shutdown)
@@ -39,9 +45,12 @@ def main() -> int:
 
     thread = threading.Thread(target=collector.run, args=(stop,), name="collector", daemon=True)
     thread.start()
+    accounts_thread = threading.Thread(target=poller.run, args=(stop,), name="accounts", daemon=True)
+    accounts_thread.start()
     logging.info("SeedScope %s, port %d", __version__, config.port)
     server.serve_forever()
     thread.join(timeout=10)
+    accounts_thread.join(timeout=5)
     conn.close()
     return 0
 

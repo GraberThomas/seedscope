@@ -6,7 +6,7 @@ const WEEKDAYS = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
 const RANGES = [['1h', '1 h'], ['6h', '6 h'], ['24h', '24 h'], ['3d', '3 j'], ['7d', '7 j'], ['30d', '30 j'], ['90d', '90 j'], ['180d', '6 mois'], ['1y', '1 an'], ['all', 'Tout']];
 const WINDOWS = [[1, '24 h'], [7, '7 j'], [30, '30 j'], [90, '90 j'], [365, '1 an']];
 const BUCKET_NAMES = { min5: 'tranche de 5 min', min30: 'tranche de 30 min', hour: 'heure', hour6: 'tranche de 6 h', day: 'jour', week: 'semaine', month: 'mois' };
-const NAV = [['/', 'Aperçu'], ['/activite', 'Activité'], ['/contenus', 'Contenus'], ['/torrents', 'Torrents'], ['/popularite', 'Popularité'], ['/trackers', 'Trackers'], ['/rentabilite', 'Rentabilité'], ['/parametres', 'Paramètres']];
+const NAV = [['/', 'Aperçu'], ['/activite', 'Activité'], ['/contenus', 'Contenus'], ['/torrents', 'Torrents'], ['/popularite', 'Popularité'], ['/trackers', 'Trackers'], ['/comptes', 'Comptes'], ['/rentabilite', 'Rentabilité'], ['/parametres', 'Paramètres']];
 const NO_DATA = 'Pas encore assez de données : la collecte vient de démarrer, cette vue se remplira avec le temps.';
 const UP = 'var(--series-1)';
 const DOWN = 'var(--series-2)';
@@ -865,6 +865,92 @@ async function trackers() {
   ];
 }
 
+// ---- Tracker accounts ----
+const signedBytes = (value) => (value === null || value === undefined ? '–' : `${value >= 0 ? '+' : '−'}${bytes(Math.abs(value))}`);
+const signedRatio = (value) => (value === null || value === undefined ? '–' : `${value >= 0 ? '+' : '−'}${number(Math.abs(value))}`);
+const countText = (value) => (value === null || value === undefined ? '–' : value.toLocaleString('fr-FR'));
+const EXTRA_FORMATS = { bytes, ratio: ratioText, count: countText, number: (v) => (v === null || v === undefined ? '–' : number(v, v % 1 ? 2 : 0)) };
+
+function changeDelta(value, format) {
+  if (value === null || value === undefined) return null;
+  return h('span', { class: `delta ${value >= 0 ? 'up' : 'down'}`, text: `${format(value)} sur ${rangeName()}` });
+}
+
+function accountCard(tracker) {
+  const latest = tracker.latest;
+  const change = tracker.change || {};
+  const updated = tracker.last_success ? `Mis à jour ${ago(tracker.last_success)}` : 'Jamais lu';
+  const head = h('div', { class: 'card-head' }, h('h2', { text: tracker.label }), h('span', { class: 'subtle', text: updated }));
+  const problems = [];
+  if (tracker.last_error) {
+    problems.push(h('div', { class: 'banner', role: 'alert' }, h('strong', { text: '⚠ Dernière lecture échouée' }),
+      `${tracker.last_error} (${ago(tracker.last_attempt)}).`));
+  }
+  if (!tracker.configured) {
+    problems.push(h('div', { class: 'banner', text: 'Aucune clé configurée : l’historique reste visible, mais plus rien n’est collecté.' }));
+  }
+  if (!latest) {
+    return h('section', { class: 'card account' }, head, ...problems,
+      h('div', { class: 'empty', text: 'Aucune mesure pour l’instant : la première lecture a lieu quelques secondes après le démarrage.' }));
+  }
+  const tiles = [
+    tile('Envoyé', bytes(latest.uploaded), changeDelta(change.uploaded, signedBytes)),
+    tile('Reçu', bytes(latest.downloaded), changeDelta(change.downloaded, signedBytes)),
+    latest.buffer !== null ? tile('Marge', bytes(latest.buffer)) : null,
+    latest.seeding !== null ? tile('En seed', countText(latest.seeding), latest.leeching ? h('span', { class: 'delta', text: `${latest.leeching} en téléchargement` }) : null) : null,
+    latest.bonus !== null ? tile(tracker.bonus_label, countText(Math.round(latest.bonus)), changeDelta(change.bonus, (v) => `${v >= 0 ? '+' : '−'}${countText(Math.round(Math.abs(v)))}`)) : null,
+    ...latest.extras.filter((extra) => extra.value !== null && extra.value !== undefined)
+      .map((extra) => tile(extra.label, (EXTRA_FORMATS[extra.kind] || String)(extra.value))),
+  ];
+  const series = tracker.series;
+  const samples = () => tableView(
+    () => [
+      { key: 'time', label: 'Date', order: -1 },
+      { key: 'ratio', label: 'Ratio', num: true, format: ratioText },
+      { key: 'uploaded', label: 'Envoyé', num: true, format: bytes },
+      { key: 'downloaded', label: 'Reçu', num: true, format: bytes },
+    ],
+    () => series.ts.slice(-200).reverse().map((ts, i) => {
+      const index = series.ts.length - 1 - i;
+      return { time: new Date(ts * 1000).toLocaleString('fr-FR'), ratio: series.ratio[index], uploaded: series.uploaded[index], downloaded: series.downloaded[index] };
+    }),
+  );
+  const empty = 'Il faut au moins deux mesures sur la période : la courbe se remplit à chaque lecture.';
+  return h('section', { class: 'card account' }, head, ...problems,
+    h('div', { class: 'hero-row' },
+      h('div', { class: 'card hero' },
+        h('div', { class: 'label', text: 'Ratio' }),
+        h('div', { class: 'value', text: ratioText(latest.ratio) }),
+        change.ratio !== null && change.ratio !== undefined ? changeDelta(change.ratio, signedRatio) : null),
+      h('div', { class: 'tiles' }, tiles.filter(Boolean))),
+    h('div', { class: 'grid-2' },
+      h('div', {},
+        h('h3', { text: 'Évolution du ratio' }),
+        lineChart({
+          ts: series.ts, series: [{ name: 'Ratio', color: UP, values: series.ratio }],
+          format: (v) => number(v), zero: false, height: 200, empty, ariaLabel: `Évolution du ratio sur ${tracker.label}`,
+        })),
+      h('div', {},
+        h('h3', { text: 'Envoyé et reçu' }),
+        lineChart({
+          ts: series.ts,
+          series: [{ name: 'Envoyé', color: UP, values: series.uploaded }, { name: 'Reçu', color: DOWN, values: series.downloaded }],
+          format: bytes, axisFormat: bytesAxis, binary: true, zero: false, height: 200, empty, ariaLabel: `Envoyé et reçu sur ${tracker.label}`,
+        }))),
+    samples());
+}
+
+async function accountsPage() {
+  const data = await api(`/api/accounts?range=${ui.range}`);
+  const every = data.interval === 3600 ? 'toutes les heures' : `toutes les ${intervalName(data.interval)}`;
+  const intro = h('p', { class: 'note', text: `Chiffres lus ${every} sur le site de chaque tracker : ils comptent le freeleech, les bonus et les autres clients, contrairement à qBittorrent.` });
+  if (!data.trackers.length) {
+    return [card('Comptes sur les trackers', null,
+      h('div', { class: 'empty', text: 'Aucun compte configuré : ajoutez les clés API dans le fichier .env (voir le README).' }))];
+  }
+  return [h('div', { class: 'filters' }, rangeFilter()), intro, ...data.trackers.map(accountCard)];
+}
+
 async function profitability() {
   const dead = ui.contentMode === 'dead';
   const sort = ui.contentSort;
@@ -1119,6 +1205,7 @@ async function pageFor(route) {
   if (route === '/popularite') return popularityPage();
   if (route === '/parametres') return settingsPage();
   if (route === '/trackers') return trackers();
+  if (route === '/comptes') return accountsPage();
   if (route === '/rentabilite') return profitability();
   if (route.startsWith('/torrent/')) return torrentDetail(route.slice('/torrent/'.length));
   return [h('div', { class: 'empty', text: 'Page introuvable.' })];
